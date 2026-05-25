@@ -5,15 +5,26 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 
 # DIAGNÓSTICO TEMPORAL
+# DIAGNÓSTICO TEMPORAL
 import os
 st.set_page_config(page_title="Test", layout="wide")
 st.write("Iniciando...")
-st.write("Archivos en /mount/src/gas-project/data/processed/:")
+
+# Detectar ruta correcta
+base = Path(__file__).parent.parent
+st.write(f"BASE_DIR: {base}")
+st.write(f"Existe: {base.exists()}")
+
+processed = base / "data" / "processed"
+st.write(f"PROCESSED: {processed}")
+st.write(f"Existe processed: {processed.exists()}")
+
 try:
-    archivos = os.listdir("/mount/src/gas-project/data/processed/")
-    st.write(archivos)
+    archivos = os.listdir(processed)
+    st.write(f"Archivos: {archivos}")
 except Exception as e:
-    st.write(f"Error: {e}")
+    st.write(f"Error listando: {e}")
+
 st.stop()
 
 
