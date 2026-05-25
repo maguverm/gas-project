@@ -10,6 +10,10 @@ PARQUET_PATH = BASE_DIR / "data" / "processed" / "contratos_gas.parquet"
 DEMANDA_PATH = BASE_DIR / "data" / "processed" / "demanda_gestor.parquet"
 PRODUCCION_PATH = BASE_DIR / "data" / "processed" / "produccion_gestor.parquet"
 
+# Debug temporal
+import os
+st.write("BASE_DIR:", str(BASE_DIR))
+st.write("Existe parquet:", os.path.exists(PARQUET_PATH))
 # ── Configuración de la página ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Monitor de Gas Natural - Superservicios",
