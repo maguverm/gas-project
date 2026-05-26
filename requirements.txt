@@ -1,6 +1,6 @@
 streamlit
-pandas<3.0
+pandas
 plotly
-pyarrow
+pyarrow==14.0.2
 openpyxl
 numpy
