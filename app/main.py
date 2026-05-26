@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+import traceback
+import sys
 
 # ── Rutas ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
@@ -27,6 +29,9 @@ def cargar_contratos():
     ]
     df = pd.read_parquet(PARQUET_PATH, columns=columnas)
     df = df[df['fecha_dia'] >= '2021-01-01'].copy()
+    # Reducir memoria al máximo
+    df['cantidad'] = df['cantidad'].astype('int32')
+    df['precio'] = df['precio'].astype('float32')
     for col in ['sector_consumo', 'modalidad', 'mercado',
                 'nombre_vendedor', 'nombre_comprador', 'tipo_demanda']:
         df[col] = df[col].astype('category')
