@@ -28,7 +28,7 @@ def cargar_contratos():
         'fecha_inicial', 'fecha_final', 'no_operacion', 'tipo_demanda'
     ]
     df = pd.read_parquet(PARQUET_PATH, columns=columnas)
-    df = df[df['fecha_dia'] >= '2021-01-01'].copy()
+    df = df[df['fecha_dia'] >= '2025-01-01'].copy()
     # Reducir memoria al máximo
     df['cantidad'] = df['cantidad'].astype('int32')
     df['precio'] = df['precio'].astype('float32')
