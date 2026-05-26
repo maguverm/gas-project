@@ -1,6 +1,7 @@
 streamlit
 pandas
 plotly
-pyarrow==15.0.2
+pyarrow
 openpyxl
 numpy
+fastparquet
