@@ -1049,6 +1049,43 @@ elif seccion == "⚡ Declaración de Producción":
         )
         st.plotly_chart(fig_mes, use_container_width=True)
 
+# ── Tabla de variaciones entre declaratorias ──────────────────────
+        if len(dp_declaratoria) >= 2:
+            st.markdown("---")
+            st.subheader("Variaciones entre Declaratorias")
+
+            # Pivot: filas = mes, columnas = declaratoria
+            tabla_var = grp_mes.pivot_table(
+                index='mes_str', columns='periodo', values='gbtud'
+            ).reset_index()
+            tabla_var.columns.name = None
+
+            # Ordenar declaratorias
+            decl_cols = sorted([c for c in tabla_var.columns if c != 'mes_str'])
+
+            # Calcular variaciones entre declaratorias consecutivas
+            for i in range(len(decl_cols) - 1):
+                d1 = decl_cols[i]
+                d2 = decl_cols[i + 1]
+                col_name = f'Var% {d1}→{d2}'
+                tabla_var[col_name] = ((tabla_var[d2] - tabla_var[d1]) / 
+                                       tabla_var[d1].replace(0, float('nan')) * 100)
+
+            # Formatear
+            tabla_fmt = tabla_var.copy()
+            tabla_fmt = tabla_fmt.rename(columns={'mes_str': 'Mes'})
+            for col in decl_cols:
+                tabla_fmt[col] = tabla_fmt[col].apply(lambda x: fmt(x, 1))
+            for col in tabla_fmt.columns:
+                if 'Var%' in col:
+                    tabla_fmt[col] = tabla_fmt[col].apply(
+                        lambda x: fmt(x, 1) + '%' if not pd.isna(x) else 'N/D')
+
+            st.dataframe(tabla_fmt, use_container_width=True, height=400)
+        else:
+            st.info("Selecciona al menos 2 declaratorias para ver las variaciones.")
+
+
     with tab_dp2:
             st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
 
