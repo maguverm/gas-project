@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).parent.parent
 PARQUET_PATH = BASE_DIR / "data" / "processed" / "contratos_gas.parquet"
 DEMANDA_PATH = BASE_DIR / "data" / "processed" / "demanda_gestor.parquet"
 PRODUCCION_PATH = BASE_DIR / "data" / "processed" / "produccion_gestor.parquet"
+POTENCIAL_PATH = BASE_DIR / "data" / "processed" / "potencial_produccion.parquet"
 
 # ── Configuración de la página ───────────────────────────────────────────────
 st.set_page_config(
@@ -47,8 +48,14 @@ def cargar_produccion():
     df = pd.read_parquet(PRODUCCION_PATH)
     return df
 
+@st.cache_data
+def cargar_potencial():
+    df = pd.read_parquet(POTENCIAL_PATH)
+    return df
+
 df = cargar_contratos()
 df_dem = cargar_demanda()
+df_pot = cargar_potencial()
 
 # ── Formato colombiano ────────────────────────────────────────────────────────
 def fmt(valor, decimales=1):
@@ -368,7 +375,7 @@ with st.sidebar:
     st.title("⛽ Gas Natural")
     st.markdown("---")
     seccion = st.radio("Sección",
-        ["⛽ Contratación", "📊 Demanda", "🔄 Balance de Mercado", "🔋 Producción"],
+        ["⛽ Contratación", "📊 Demanda", "🔄 Balance de Mercado", "🔋 Producción", "⚡ Declaración de Producción"],
         label_visibility="collapsed")
     st.markdown("---")
     st.caption(f"Contratos al: {df['fecha_dia'].max().strftime('%d/%m/%Y')}")
@@ -947,3 +954,173 @@ elif seccion == "🔋 Producción":
         with col2:
             st.plotly_chart(pie_chart(dfpa, 'fuente', 'Producción por Fuente/Campo', 'energia_mbtu'), use_container_width=True)
         st.plotly_chart(bar_chart_top(dfpa, 'fuente', 'Top 10 Fuentes por Producción', 'energia_mbtu'), use_container_width=True)
+
+elif seccion == "⚡ Declaración de Producción":
+    st.title("⚡ Declaración de Producción")
+    tab_dp1, tab_dp2 = st.tabs(["📈 Potencial de Producción", "⚖️ PP vs Contratación vs PTDV"])
+
+    with tab_dp1:
+        st.subheader("Potencial de Producción (GBTUD) según Declaratoria")
+
+        # ── Filtros ───────────────────────────────────────────────────────
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            dp_declaratoria = st.multiselect("Declaratoria",
+                sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()),
+                default=['2026-2035'],
+                key="dp_declaratoria")
+        with col2:
+            dp_campo = st.multiselect("Campo",
+                sorted(df_pot['campo'].dropna().astype(str).unique().tolist()),
+                placeholder="Todos", key="dp_campo")
+        with col3:
+            dp_operador = st.multiselect("Operador",
+                sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()),
+                placeholder="Todos", key="dp_operador")
+        with col4:
+            dp_variable = st.selectbox("Variable", ["PP", "PTDV", "PC (todas)"], key="dp_variable")
+
+        with col5:
+            anios_disponibles = sorted(df_pot['mes'].dt.year.unique().tolist())
+            dp_anios = st.multiselect("Año", anios_disponibles,
+                default=[a for a in anios_disponibles if a >= 2026],
+                key="dp_anios")
+
+        # ── Filtrar ───────────────────────────────────────────────────────
+        dfp = df_pot.copy()
+        if dp_declaratoria:
+            dfp = dfp[dfp['periodo'].astype(str).isin(dp_declaratoria)]
+        if dp_campo:
+            dfp = dfp[dfp['campo'].astype(str).isin(dp_campo)]
+        if dp_operador:
+            dfp = dfp[dfp['razon_social'].astype(str).isin(dp_operador)]
+        if dp_anios:
+            dfp = dfp[dfp['mes'].dt.year.isin(dp_anios)]
+
+        # Seleccionar variable
+        if dp_variable == "PP":
+            col_var = 'pp'
+        elif dp_variable == "PTDV":
+            col_var = 'ptdv'
+        else:
+            col_var = None  # suma de PCs
+
+        # ── Calcular GBTUD mensual ────────────────────────────────────────
+        if col_var:
+            grp_mes = dfp.groupby(['mes', 'periodo'], observed=True)[col_var].sum().reset_index()
+            grp_mes['gbtud'] = grp_mes[col_var] / 1000
+        else:
+            dfp['pc_total'] = (dfp['pc_consumo_interno'] + dfp['pc_exportaciones'] +
+                               dfp['pc_refineria_barranca'] + dfp['pc_refineria_cartagena'])
+            grp_mes = dfp.groupby(['mes', 'periodo'], observed=True)['pc_total'].sum().reset_index()
+            grp_mes['gbtud'] = grp_mes['pc_total'] / (grp_mes['mes'].dt.days_in_month * 1000)
+        grp_mes['mes_str'] = grp_mes['mes'].dt.strftime('%Y-%m')
+
+        # ── Gráfico por año (promedio de GBTUD mensuales) ─────────────────
+        grp_mes['anio'] = grp_mes['mes'].dt.year
+        grp_anio = grp_mes.groupby(['anio', 'periodo'], observed=True)['gbtud'].mean().reset_index()
+
+        fig_anio = go.Figure()
+        for per in sorted(grp_anio['periodo'].astype(str).unique()):
+            data_per = grp_anio[grp_anio['periodo'].astype(str) == per]
+            fig_anio.add_trace(go.Scatter(
+                name=per, x=data_per['anio'], y=data_per['gbtud'],
+                mode='lines+markers', fill='tozeroy'
+            ))
+        fig_anio.update_layout(
+            title=f'Potencial de Producción (GBTUD) al año según declaratoria — {dp_variable}',
+            xaxis_title='Año', yaxis_title='GBTUD', height=400,
+            legend=dict(orientation='v', x=1.02)
+        )
+        st.plotly_chart(fig_anio, use_container_width=True)
+
+        # ── Gráfico por mes ───────────────────────────────────────────────
+        fig_mes = go.Figure()
+        for per in sorted(grp_mes['periodo'].astype(str).unique()):
+            data_per = grp_mes[grp_mes['periodo'].astype(str) == per]
+            fig_mes.add_trace(go.Scatter(
+                name=per, x=data_per['mes_str'], y=data_per['gbtud'],
+                mode='lines+markers', fill='tozeroy'
+            ))
+        fig_mes.update_layout(
+            title=f'Potencial de Producción (GBTUD) al mes según declaratoria — {dp_variable}',
+            xaxis_title='Mes', yaxis_title='GBTUD', height=400,
+            legend=dict(orientation='v', x=1.02)
+        )
+        st.plotly_chart(fig_mes, use_container_width=True)
+
+    with tab_dp2:
+            st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
+
+            # ── Filtros (mismos que tab1) ──────────────────────────────────────
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                dp2_declaratoria = st.multiselect("Declaratoria",
+                    sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()),
+                    default=['2026-2035'], key="dp2_declaratoria")
+            with col2:
+                dp2_campo = st.multiselect("Campo",
+                    sorted(df_pot['campo'].dropna().astype(str).unique().tolist()),
+                    placeholder="Todos", key="dp2_campo")
+            with col3:
+                dp2_operador = st.multiselect("Operador",
+                    sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()),
+                    placeholder="Todos", key="dp2_operador")
+            with col4:
+                anios_disponibles2 = sorted(df_pot['mes'].dt.year.unique().tolist())
+                dp2_anios = st.multiselect("Año", anios_disponibles2,
+                    default=[a for a in anios_disponibles2 if a >= 2026],
+                    key="dp2_anios")
+            with col5:
+                dp2_gran = st.selectbox("Ver por", ["Mensual", "Anual"], key="dp2_gran")
+
+            # ── Filtrar ───────────────────────────────────────────────────────
+            dfp2 = df_pot.copy()
+            if dp2_declaratoria:
+                dfp2 = dfp2[dfp2['periodo'].astype(str).isin(dp2_declaratoria)]
+            if dp2_campo:
+                dfp2 = dfp2[dfp2['campo'].astype(str).isin(dp2_campo)]
+            if dp2_operador:
+                dfp2 = dfp2[dfp2['razon_social'].astype(str).isin(dp2_operador)]
+            if dp2_anios:
+                dfp2 = dfp2[dfp2['mes'].dt.year.isin(dp2_anios)]
+
+            # ── Agrupar ───────────────────────────────────────────────────────
+            grp2 = dfp2.groupby('mes')[['pp', 'pc_consumo_interno', 'ptdv']].sum().reset_index()
+            grp2['gbtud_pp'] = grp2['pp'] / 1000
+            grp2['gbtud_pc'] = grp2['pc_consumo_interno'] / 1000
+            grp2['gbtud_ptdv'] = grp2['ptdv'] / 1000
+            grp2['mes_str'] = grp2['mes'].dt.strftime('%Y-%m')
+
+            if dp2_gran == "Anual":
+                grp2['anio'] = grp2['mes'].dt.year
+                grp2 = grp2.groupby('anio')[['gbtud_pp', 'gbtud_pc', 'gbtud_ptdv']].mean().reset_index()
+                eje_x = grp2['anio']
+                x_title = 'Año'
+            else:
+                eje_x = grp2['mes_str']
+                x_title = 'Mes'
+
+            # ── Gráfico ───────────────────────────────────────────────────────
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                name='Potencial de Producción (PP)', x=eje_x, y=grp2['gbtud_pp'],
+                mode='lines', fill='tozeroy', line=dict(color='steelblue'),
+                fillcolor='rgba(70,130,180,0.3)'
+            ))
+            fig2.add_trace(go.Scatter(
+                name='PC - Consumo Interno', x=eje_x, y=grp2['gbtud_pc'],
+                mode='lines', fill='tozeroy', line=dict(color='green'),
+                fillcolor='rgba(0,128,0,0.3)'
+            ))
+            fig2.add_trace(go.Scatter(
+                name='PTDV', x=eje_x, y=grp2['gbtud_ptdv'],
+                mode='lines', fill='tozeroy', line=dict(color='red'),
+                fillcolor='rgba(255,0,0,0.3)'
+            ))
+            fig2.update_layout(
+                title='Potencial de Producción, Producción Contratada y PTDV (GBTUD)',
+                xaxis_title=x_title, yaxis_title='GBTUD', height=500,
+                legend=dict(orientation='h', y=1.08)
+            )
+            st.plotly_chart(fig2, use_container_width=True)  
