@@ -963,12 +963,11 @@ elif seccion == "⚡ Declaración de Producción":
         st.subheader("Potencial de Producción (GBTUD) según Declaratoria")
 
         # ── Filtros ───────────────────────────────────────────────────────
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             dp_declaratoria = st.multiselect("Declaratoria",
                 sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()),
-                default=['2026-2035'],
-                key="dp_declaratoria")
+                default=['2026-2035'], key="dp_declaratoria")
         with col2:
             dp_campo = st.multiselect("Campo",
                 sorted(df_pot['campo'].dropna().astype(str).unique().tolist()),
@@ -979,12 +978,13 @@ elif seccion == "⚡ Declaración de Producción":
                 placeholder="Todos", key="dp_operador")
         with col4:
             dp_variable = st.selectbox("Variable", ["PP", "PTDV", "PC (todas)"], key="dp_variable")
-
         with col5:
             anios_disponibles = sorted(df_pot['mes'].dt.year.unique().tolist())
             dp_anios = st.multiselect("Año", anios_disponibles,
                 default=[a for a in anios_disponibles if a >= 2026],
                 key="dp_anios")
+        with col6:
+            dp_gran = st.selectbox("Ver por", ["Mensual", "Trimestral", "Anual"], key="dp_gran")
 
         # ── Filtrar ───────────────────────────────────────────────────────
         dfp = df_pot.copy()
@@ -997,13 +997,13 @@ elif seccion == "⚡ Declaración de Producción":
         if dp_anios:
             dfp = dfp[dfp['mes'].dt.year.isin(dp_anios)]
 
-        # Seleccionar variable
+        # ── Seleccionar variable ──────────────────────────────────────────
         if dp_variable == "PP":
             col_var = 'pp'
         elif dp_variable == "PTDV":
             col_var = 'ptdv'
         else:
-            col_var = None  # suma de PCs
+            col_var = None
 
         # ── Calcular GBTUD mensual ────────────────────────────────────────
         if col_var:
@@ -1013,65 +1013,51 @@ elif seccion == "⚡ Declaración de Producción":
             dfp['pc_total'] = (dfp['pc_consumo_interno'] + dfp['pc_exportaciones'] +
                                dfp['pc_refineria_barranca'] + dfp['pc_refineria_cartagena'])
             grp_mes = dfp.groupby(['mes', 'periodo'], observed=True)['pc_total'].sum().reset_index()
-            grp_mes['gbtud'] = grp_mes['pc_total'] / (grp_mes['mes'].dt.days_in_month * 1000)
+            grp_mes['gbtud'] = grp_mes['pc_total'] / 1000
         grp_mes['mes_str'] = grp_mes['mes'].dt.strftime('%Y-%m')
-
-        # ── Gráfico por año (promedio de GBTUD mensuales) ─────────────────
         grp_mes['anio'] = grp_mes['mes'].dt.year
-        grp_anio = grp_mes.groupby(['anio', 'periodo'], observed=True)['gbtud'].mean().reset_index()
+        grp_mes['trimestre'] = grp_mes['mes'].dt.to_period('Q').astype(str)
 
-        fig_anio = go.Figure()
-        for per in sorted(grp_anio['periodo'].astype(str).unique()):
-            data_per = grp_anio[grp_anio['periodo'].astype(str) == per]
-            fig_anio.add_trace(go.Scatter(
-                name=per, x=data_per['anio'], y=data_per['gbtud'],
+        # ── Agrupar según granularidad ────────────────────────────────────
+        if dp_gran == "Anual":
+            grp_plot = grp_mes.groupby(['anio', 'periodo'], observed=True)['gbtud'].mean().reset_index()
+            grp_plot['eje'] = grp_plot['anio'].astype(str)
+        elif dp_gran == "Trimestral":
+            grp_plot = grp_mes.groupby(['trimestre', 'periodo'], observed=True)['gbtud'].mean().reset_index()
+            grp_plot['eje'] = grp_plot['trimestre']
+        else:
+            grp_plot = grp_mes.copy()
+            grp_plot['eje'] = grp_plot['mes_str']
+
+        # ── Gráfico ───────────────────────────────────────────────────────
+        fig_plot = go.Figure()
+        for per in sorted(grp_plot['periodo'].astype(str).unique()):
+            data_per = grp_plot[grp_plot['periodo'].astype(str) == per]
+            fig_plot.add_trace(go.Scatter(
+                name=per, x=data_per['eje'], y=data_per['gbtud'],
                 mode='lines+markers', fill='tozeroy'
             ))
-        fig_anio.update_layout(
-            title=f'Potencial de Producción (GBTUD) al año según declaratoria — {dp_variable}',
-            xaxis_title='Año', yaxis_title='GBTUD', height=400,
+        fig_plot.update_layout(
+            title=f'Potencial de Producción (GBTUD) — {dp_variable} — {dp_gran}',
+            xaxis_title=dp_gran, yaxis_title='GBTUD', height=450,
             legend=dict(orientation='v', x=1.02)
         )
-        st.plotly_chart(fig_anio, use_container_width=True)
+        st.plotly_chart(fig_plot, use_container_width=True)
 
-        # ── Gráfico por mes ───────────────────────────────────────────────
-        fig_mes = go.Figure()
-        for per in sorted(grp_mes['periodo'].astype(str).unique()):
-            data_per = grp_mes[grp_mes['periodo'].astype(str) == per]
-            fig_mes.add_trace(go.Scatter(
-                name=per, x=data_per['mes_str'], y=data_per['gbtud'],
-                mode='lines+markers', fill='tozeroy'
-            ))
-        fig_mes.update_layout(
-            title=f'Potencial de Producción (GBTUD) al mes según declaratoria — {dp_variable}',
-            xaxis_title='Mes', yaxis_title='GBTUD', height=400,
-            legend=dict(orientation='v', x=1.02)
-        )
-        st.plotly_chart(fig_mes, use_container_width=True)
-
-# ── Tabla de variaciones entre declaratorias ──────────────────────
+        # ── Tabla de variaciones entre declaratorias ──────────────────────
         if len(dp_declaratoria) >= 2:
             st.markdown("---")
             st.subheader("Variaciones entre Declaratorias")
-
-            # Pivot: filas = mes, columnas = declaratoria
             tabla_var = grp_mes.pivot_table(
                 index='mes_str', columns='periodo', values='gbtud'
             ).reset_index()
             tabla_var.columns.name = None
-
-            # Ordenar declaratorias
             decl_cols = sorted([c for c in tabla_var.columns if c != 'mes_str'])
-
-            # Calcular variaciones entre declaratorias consecutivas
             for i in range(len(decl_cols) - 1):
                 d1 = decl_cols[i]
                 d2 = decl_cols[i + 1]
-                col_name = f'Var% {d1}→{d2}'
-                tabla_var[col_name] = ((tabla_var[d2] - tabla_var[d1]) / 
-                                       tabla_var[d1].replace(0, float('nan')) * 100)
-
-            # Formatear
+                tabla_var[f'Var% {d1}→{d2}'] = ((tabla_var[d2] - tabla_var[d1]) /
+                                                  tabla_var[d1].replace(0, float('nan')) * 100)
             tabla_fmt = tabla_var.copy()
             tabla_fmt = tabla_fmt.rename(columns={'mes_str': 'Mes'})
             for col in decl_cols:
@@ -1080,84 +1066,146 @@ elif seccion == "⚡ Declaración de Producción":
                 if 'Var%' in col:
                     tabla_fmt[col] = tabla_fmt[col].apply(
                         lambda x: fmt(x, 1) + '%' if not pd.isna(x) else 'N/D')
-
             st.dataframe(tabla_fmt, use_container_width=True, height=400)
-        else:
-            st.info("Selecciona al menos 2 declaratorias para ver las variaciones.")
 
+            # ── Ranking por Operador y Campo ──────────────────────────────
+            st.markdown("---")
+            st.subheader(f"Ranking por Operador y Campo — {dp_variable}")
+
+            if col_var:
+                grp_rank = dfp.groupby(['razon_social', 'campo', 'periodo'], observed=True)[col_var].sum().reset_index()
+                grp_rank['gbtud'] = grp_rank[col_var] / 1000
+            else:
+                dfp['pc_total'] = (dfp['pc_consumo_interno'] + dfp['pc_exportaciones'] +
+                                   dfp['pc_refineria_barranca'] + dfp['pc_refineria_cartagena'])
+                grp_rank = dfp.groupby(['razon_social', 'campo', 'periodo'], observed=True)['pc_total'].sum().reset_index()
+                grp_rank['gbtud'] = grp_rank['pc_total'] / 1000
+
+            pivot_rank = grp_rank.pivot_table(
+                index=['razon_social', 'campo'], columns='periodo', values='gbtud', fill_value=0
+            ).reset_index()
+            pivot_rank.columns.name = None
+            decl_cols_rank = sorted([c for c in pivot_rank.columns if c not in ['razon_social', 'campo']])
+
+            for i in range(len(decl_cols_rank) - 1):
+                d1 = decl_cols_rank[i]
+                d2 = decl_cols_rank[i + 1]
+                pivot_rank[f'Var% {d1}→{d2}'] = ((pivot_rank[d2] - pivot_rank[d1]) /
+                                                   pivot_rank[d1].replace(0, float('nan')) * 100)
+
+            op_totals_rank = pivot_rank.groupby('razon_social')[decl_cols_rank].sum().reset_index()
+            for i in range(len(decl_cols_rank) - 1):
+                d1 = decl_cols_rank[i]
+                d2 = decl_cols_rank[i + 1]
+                op_totals_rank[f'Var% {d1}→{d2}'] = ((op_totals_rank[d2] - op_totals_rank[d1]) /
+                                                       op_totals_rank[d1].replace(0, float('nan')) * 100)
+
+            ultima_decl = decl_cols_rank[-1]
+            op_totals_rank = op_totals_rank.sort_values(ultima_decl, ascending=False)
+
+            var_cols_rank = [c for c in pivot_rank.columns if 'Var%' in str(c)]
+
+            filas_rank = []
+            for _, op_row in op_totals_rank.iterrows():
+                op = op_row['razon_social']
+                fila = {'Operador / Campo': f'▶ {op}'}
+                for col in decl_cols_rank:
+                    fila[col] = fmt(op_row[col], 1)
+                for col in var_cols_rank:
+                    fila[col] = fmt(op_row[col], 1) + '%' if not pd.isna(op_row[col]) else 'N/D'
+                filas_rank.append(fila)
+
+                campos_op = pivot_rank[pivot_rank['razon_social'] == op].sort_values(ultima_decl, ascending=False)
+                for _, campo_row in campos_op.iterrows():
+                    fila_c = {'Operador / Campo': f'   → {campo_row["campo"]}'}
+                    for col in decl_cols_rank:
+                        fila_c[col] = fmt(campo_row[col], 1)
+                    for col in var_cols_rank:
+                        fila_c[col] = fmt(campo_row[col], 1) + '%' if not pd.isna(campo_row[col]) else 'N/D'
+                    filas_rank.append(fila_c)
+
+            st.dataframe(pd.DataFrame(filas_rank), use_container_width=True, height=500)
+
+        else:
+            st.info("Selecciona al menos 2 declaratorias para ver las variaciones y el ranking.")
 
     with tab_dp2:
-            st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
+        st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
 
-            # ── Filtros (mismos que tab1) ──────────────────────────────────────
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                dp2_declaratoria = st.multiselect("Declaratoria",
-                    sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()),
-                    default=['2026-2035'], key="dp2_declaratoria")
-            with col2:
-                dp2_campo = st.multiselect("Campo",
-                    sorted(df_pot['campo'].dropna().astype(str).unique().tolist()),
-                    placeholder="Todos", key="dp2_campo")
-            with col3:
-                dp2_operador = st.multiselect("Operador",
-                    sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()),
-                    placeholder="Todos", key="dp2_operador")
-            with col4:
-                anios_disponibles2 = sorted(df_pot['mes'].dt.year.unique().tolist())
-                dp2_anios = st.multiselect("Año", anios_disponibles2,
-                    default=[a for a in anios_disponibles2 if a >= 2026],
-                    key="dp2_anios")
-            with col5:
-                dp2_gran = st.selectbox("Ver por", ["Mensual", "Anual"], key="dp2_gran")
+        # ── Filtros ───────────────────────────────────────────────────────
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            dp2_declaratoria = st.multiselect("Declaratoria",
+                sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()),
+                default=['2026-2035'], key="dp2_declaratoria")
+        with col2:
+            dp2_campo = st.multiselect("Campo",
+                sorted(df_pot['campo'].dropna().astype(str).unique().tolist()),
+                placeholder="Todos", key="dp2_campo")
+        with col3:
+            dp2_operador = st.multiselect("Operador",
+                sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()),
+                placeholder="Todos", key="dp2_operador")
+        with col4:
+            anios_disponibles2 = sorted(df_pot['mes'].dt.year.unique().tolist())
+            dp2_anios = st.multiselect("Año", anios_disponibles2,
+                default=[a for a in anios_disponibles2 if a >= 2026],
+                key="dp2_anios")
+        with col5:
+            dp2_gran = st.selectbox("Ver por", ["Mensual", "Trimestral", "Anual"], key="dp2_gran")
 
-            # ── Filtrar ───────────────────────────────────────────────────────
-            dfp2 = df_pot.copy()
-            if dp2_declaratoria:
-                dfp2 = dfp2[dfp2['periodo'].astype(str).isin(dp2_declaratoria)]
-            if dp2_campo:
-                dfp2 = dfp2[dfp2['campo'].astype(str).isin(dp2_campo)]
-            if dp2_operador:
-                dfp2 = dfp2[dfp2['razon_social'].astype(str).isin(dp2_operador)]
-            if dp2_anios:
-                dfp2 = dfp2[dfp2['mes'].dt.year.isin(dp2_anios)]
+        # ── Filtrar ───────────────────────────────────────────────────────
+        dfp2 = df_pot.copy()
+        if dp2_declaratoria:
+            dfp2 = dfp2[dfp2['periodo'].astype(str).isin(dp2_declaratoria)]
+        if dp2_campo:
+            dfp2 = dfp2[dfp2['campo'].astype(str).isin(dp2_campo)]
+        if dp2_operador:
+            dfp2 = dfp2[dfp2['razon_social'].astype(str).isin(dp2_operador)]
+        if dp2_anios:
+            dfp2 = dfp2[dfp2['mes'].dt.year.isin(dp2_anios)]
 
-            # ── Agrupar ───────────────────────────────────────────────────────
-            grp2 = dfp2.groupby('mes')[['pp', 'pc_consumo_interno', 'ptdv']].sum().reset_index()
-            grp2['gbtud_pp'] = grp2['pp'] / 1000
-            grp2['gbtud_pc'] = grp2['pc_consumo_interno'] / 1000
-            grp2['gbtud_ptdv'] = grp2['ptdv'] / 1000
-            grp2['mes_str'] = grp2['mes'].dt.strftime('%Y-%m')
+        # ── Agrupar ───────────────────────────────────────────────────────
+        grp2 = dfp2.groupby('mes')[['pp', 'pc_consumo_interno', 'ptdv']].sum().reset_index()
+        grp2['gbtud_pp'] = grp2['pp'] / 1000
+        grp2['gbtud_pc'] = grp2['pc_consumo_interno'] / 1000
+        grp2['gbtud_ptdv'] = grp2['ptdv'] / 1000
+        grp2['mes_str'] = grp2['mes'].dt.strftime('%Y-%m')
+        grp2['trimestre'] = grp2['mes'].dt.to_period('Q').astype(str)
+        grp2['anio'] = grp2['mes'].dt.year
 
-            if dp2_gran == "Anual":
-                grp2['anio'] = grp2['mes'].dt.year
-                grp2 = grp2.groupby('anio')[['gbtud_pp', 'gbtud_pc', 'gbtud_ptdv']].mean().reset_index()
-                eje_x = grp2['anio']
-                x_title = 'Año'
-            else:
-                eje_x = grp2['mes_str']
-                x_title = 'Mes'
+        if dp2_gran == "Anual":
+            grp2 = grp2.groupby('anio')[['gbtud_pp', 'gbtud_pc', 'gbtud_ptdv']].mean().reset_index()
+            eje_x = grp2['anio'].astype(str)
+            x_title = 'Año'
+        elif dp2_gran == "Trimestral":
+            grp2 = grp2.groupby('trimestre')[['gbtud_pp', 'gbtud_pc', 'gbtud_ptdv']].mean().reset_index()
+            eje_x = grp2['trimestre']
+            x_title = 'Trimestre'
+        else:
+            eje_x = grp2['mes_str']
+            x_title = 'Mes'
 
-            # ── Gráfico ───────────────────────────────────────────────────────
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(
-                name='Potencial de Producción (PP)', x=eje_x, y=grp2['gbtud_pp'],
-                mode='lines', fill='tozeroy', line=dict(color='steelblue'),
-                fillcolor='rgba(70,130,180,0.3)'
-            ))
-            fig2.add_trace(go.Scatter(
-                name='PC - Consumo Interno', x=eje_x, y=grp2['gbtud_pc'],
-                mode='lines', fill='tozeroy', line=dict(color='green'),
-                fillcolor='rgba(0,128,0,0.3)'
-            ))
-            fig2.add_trace(go.Scatter(
-                name='PTDV', x=eje_x, y=grp2['gbtud_ptdv'],
-                mode='lines', fill='tozeroy', line=dict(color='red'),
-                fillcolor='rgba(255,0,0,0.3)'
-            ))
-            fig2.update_layout(
-                title='Potencial de Producción, Producción Contratada y PTDV (GBTUD)',
-                xaxis_title=x_title, yaxis_title='GBTUD', height=500,
-                legend=dict(orientation='h', y=1.08)
-            )
-            st.plotly_chart(fig2, use_container_width=True)  
+        # ── Gráfico ───────────────────────────────────────────────────────
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            name='Potencial de Producción (PP)', x=eje_x, y=grp2['gbtud_pp'],
+            mode='lines', fill='tozeroy', line=dict(color='steelblue'),
+            fillcolor='rgba(70,130,180,0.3)'
+        ))
+        fig2.add_trace(go.Scatter(
+            name='PC - Consumo Interno', x=eje_x, y=grp2['gbtud_pc'],
+            mode='lines', fill='tozeroy', line=dict(color='green'),
+            fillcolor='rgba(0,128,0,0.3)'
+        ))
+        fig2.add_trace(go.Scatter(
+            name='PTDV', x=eje_x, y=grp2['gbtud_ptdv'],
+            mode='lines', fill='tozeroy', line=dict(color='red'),
+            fillcolor='rgba(255,0,0,0.3)'
+        ))
+        fig2.update_layout(
+            title='Potencial de Producción, Producción Contratada y PTDV (GBTUD)',
+            xaxis_title=x_title, yaxis_title='GBTUD', height=500,
+            legend=dict(orientation='h', y=1.08)
+        )
+        st.plotly_chart(fig2, use_container_width=True)
