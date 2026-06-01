@@ -69,8 +69,8 @@ def agrupar(dff, granularidad):
         temp['dias_mes'] = temp['fecha_dia'].dt.days_in_month
         dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
         dias.columns = ['periodo','dias_calendario']
-    precio_pond = (dff.groupby('periodo', observed=True)
-        .apply(lambda x: (x['precio']*x['cantidad']).sum()/x['cantidad'].sum(), include_groups=False)
+    precio_pond = (dff.groupby('periodo', observed=True)[['precio','cantidad']]
+        .apply(lambda x: (x['precio']*x['cantidad']).sum()/x['cantidad'].sum())
         .reset_index(name='precio_ponderado'))
     grp = dff.groupby(['periodo','sector_consumo'], observed=True)['cantidad'].sum().reset_index()
     grp = grp.merge(dias, on='periodo')
@@ -131,7 +131,13 @@ def aplicar_filtros(dff, vendedor, comprador, modalidad, sector, mercado, tipo_d
 
 def construir_grafico(grp, titulo):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
+
+    orden_sectores = ['Residencial','Industrial','Comercial','GNVC','Generación Térmica',
+                    'Petroquímica','Petroquímica (Materia Prima)','Refinería',
+                    'Transportadores de Gas','Otros']
+    sectores_en_datos = [s for s in orden_sectores if s in grp['sector_consumo'].astype(str).unique()]
+    sectores_restantes = [s for s in grp['sector_consumo'].astype(str).unique() if s not in orden_sectores]
+    for sec in sectores_en_datos + sectores_restantes:
         data_sec = grp[grp['sector_consumo'].astype(str) == sec]
         fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']), secondary_y=False)
     precio_line = grp.drop_duplicates('periodo_str')[['periodo_str','precio_ponderado']]
@@ -140,7 +146,7 @@ def construir_grafico(grp, titulo):
     totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
     for _, row in totales.iterrows():
         fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
-            showarrow=False, textangle=-90, font=dict(size=7, color='black'), yshift=18)
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
     fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
     fig.update_yaxes(title_text="GBTUD", secondary_y=False)
     fig.update_yaxes(title_text="Precio Ponderado (USD/MBTUD)", secondary_y=True)
@@ -154,7 +160,7 @@ def construir_grafico_demanda(grp, titulo):
     totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
     for _, row in totales.iterrows():
         fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
-            showarrow=False, textangle=-90, font=dict(size=7, color='black'), yshift=18)
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
     fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.08))
     return fig
 
@@ -330,7 +336,7 @@ if seccion == "⛽ Contratación":
         grp = agrupar(dff, granularidad)
         st.plotly_chart(construir_grafico(grp, 'Contratado (GBTUD) por sector de consumo'), use_container_width=True)
         st.subheader("Detalle de contratos")
-        tabla = dff[['nombre_vendedor','nombre_comprador','cantidad','precio','modalidad','sector_consumo','tipo_demanda','mercado','fecha_inicial','fecha_final','no_operacion']].copy()
+        tabla = dff[['nombre_vendedor','nombre_comprador','cantidad','precio','modalidad','sector_consumo','tipo_demanda','mercado','fecha_inicial','fecha_final','no_operacion']].drop_duplicates(subset= ['no_operacion','sector_consumo','tipo_demanda']).copy()
         tabla['cantidad'] = tabla['cantidad'].apply(lambda x: fmt(x,0))
         tabla['precio'] = tabla['precio'].apply(lambda x: fmt(x,2))
         tabla.columns = ['Vendedor','Comprador','Cantidad (MBTU)','Precio (USD/MBTUD)','Modalidad','Sector Consumo','Tipo Demanda','Mercado','Fecha Inicial','Fecha Final','N° Operación']
@@ -569,7 +575,9 @@ elif seccion == "🔄 Balance de Mercado":
     grp_dem_emp = dff_dem.groupby(['nombre_operador','tipo_demanda'], observed=True)['cantidad_entregada'].sum().reset_index()
     grp_dem_emp['gbtud'] = grp_dem_emp['cantidad_entregada'] / (dias_prom*1000)
     grp_dem_emp = grp_dem_emp.rename(columns={'nombre_operador':'empresa','gbtud':'gbtud_dem'})
-    sobrecont = grp_cont_emp[['empresa','tipo_demanda','gbtud_cont']].merge(grp_dem_emp[['empresa','tipo_demanda','gbtud_dem']], on=['empresa','tipo_demanda'], how='outer').fillna(0)
+    sobrecont = grp_cont_emp[['empresa','tipo_demanda','gbtud_cont']].merge(grp_dem_emp[['empresa','tipo_demanda','gbtud_dem']], on=['empresa','tipo_demanda'], how='outer')
+    sobrecont['gbtud_cont'] = sobrecont['gbtud_cont'].fillna(0)
+    sobrecont['gbtud_dem'] = sobrecont['gbtud_dem'].fillna(0)
     sobrecont['diferencia'] = sobrecont['gbtud_cont'] - sobrecont['gbtud_dem']
     sobrecont['pct'] = (sobrecont['diferencia'] / sobrecont['gbtud_dem'].replace(0,float('nan')) * 100)
     emp_totals = sobrecont.groupby('empresa')[['gbtud_cont','gbtud_dem','diferencia']].sum().reset_index()
@@ -649,7 +657,7 @@ elif seccion == "🔋 Producción":
             mode='lines+markers', line=dict(color='red', width=2), hovertemplate='%{x}<br>Var%: %{y:.1f}%<extra></extra>'), secondary_y=True)
         for _, row in total_per.iterrows():
             fig_p.add_annotation(x=row['periodo_str'], y=row['gbtud_total'], text=fmt(row['gbtud_total'],1),
-                showarrow=False, textangle=-90, font=dict(size=7, color='black'), yshift=18)
+                showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
         fig_p.update_layout(barmode='stack', title='Producción (GBTUD) por Operador', xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
         fig_p.update_yaxes(title_text="GBTUD", secondary_y=False)
         fig_p.update_yaxes(title_text="Variación % período anterior", secondary_y=True)
@@ -795,7 +803,7 @@ elif seccion == "⚡ Declaración de Producción":
     with tab_dp2:
         st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
         col1, col2, col3, col4, col5 = st.columns(5)
-        with col1: dp2_declaratoria = st.multiselect("Declaratoria", sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()), default=['2026-2035'], key="dp2_declaratoria")
+        with col1: dp2_declaratoria = st.selectbox("Declaratoria", sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()), index=sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()).index('2026-2035') if '2026-2035' in sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()) else 0, key="dp2_declaratoria")
         with col2: dp2_campo = st.multiselect("Campo", sorted(df_pot['campo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key="dp2_campo")
         with col3: dp2_operador = st.multiselect("Operador", sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()), placeholder="Todos", key="dp2_operador")
         with col4:
@@ -804,7 +812,7 @@ elif seccion == "⚡ Declaración de Producción":
         with col5: dp2_gran = st.selectbox("Ver por", ["Mensual","Trimestral","Anual"], key="dp2_gran")
 
         dfp2 = df_pot.copy()
-        if dp2_declaratoria: dfp2 = dfp2[dfp2['periodo'].astype(str).isin(dp2_declaratoria)]
+        dfp2 = dfp2[dfp2['periodo'].astype(str) == dp2_declaratoria]
         if dp2_campo: dfp2 = dfp2[dfp2['campo'].astype(str).isin(dp2_campo)]
         if dp2_operador: dfp2 = dfp2[dfp2['razon_social'].astype(str).isin(dp2_operador)]
         if dp2_anios: dfp2 = dfp2[dfp2['mes'].dt.year.isin(dp2_anios)]
