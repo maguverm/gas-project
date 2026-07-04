@@ -277,7 +277,13 @@ def aplicar_filtros_nominaciones(dff, vendedor, comprador, sector, tipo_demanda,
 
 def construir_grafico(grp, titulo):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
+
+    orden_sectores = ['Residencial','Industrial','Comercial','GNVC','Generación Térmica',
+                    'Petroquímica','Petroquímica (Materia Prima)','Refinería',
+                    'Transportadores de Gas','Otros']
+    sectores_en_datos = [s for s in orden_sectores if s in grp['sector_consumo'].astype(str).unique()]
+    sectores_restantes = [s for s in grp['sector_consumo'].astype(str).unique() if s not in orden_sectores]
+    for sec in sectores_en_datos + sectores_restantes:
         data_sec = grp[grp['sector_consumo'].astype(str) == sec]
         fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']), secondary_y=False)
     precio_line = grp.drop_duplicates('periodo_str')[['periodo_str','precio_ponderado']]
