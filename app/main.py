@@ -13,30 +13,6 @@ NOMINACIONES_PATH = BASE_DIR / "data" / "processed" / "nominaciones.parquet"
 
 st.set_page_config(page_title="Monitor de Gas Natural - Superservicios", page_icon="⛽", layout="wide")
 
-
-def fmt(valor, decimales=1):
-    resultado = f"{valor:,.{decimales}f}"
-    return resultado.replace(',','X').replace('.', ',').replace('X','.')
-
-
-def fix_encoding(texto):
-    """Repara mojibake típico (texto UTF-8 mal interpretado como Latin-1)."""
-    if not isinstance(texto, str):
-        return texto
-    try:
-        return texto.encode('latin1').decode('utf-8')
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return texto
-
-
-def limpiar_columnas_texto(df, columnas):
-    """Aplica fix_encoding a una lista de columnas de texto de un DataFrame."""
-    for col in columnas:
-        if col in df.columns:
-            df[col] = df[col].apply(fix_encoding)
-    return df
-
-
 @st.cache_data
 def cargar_contratos():
     columnas = ['fecha_dia','cantidad','precio','sector_consumo','modalidad','mercado',
@@ -45,41 +21,29 @@ def cargar_contratos():
     df = df[df['fecha_dia'] >= '2021-01-01'].copy()
     df['cantidad'] = df['cantidad'].astype('int32')
     df['precio'] = df['precio'].astype('float32')
-    df = limpiar_columnas_texto(df, ['sector_consumo','modalidad','mercado','nombre_vendedor','nombre_comprador','tipo_demanda'])
     for col in ['sector_consumo','modalidad','mercado','nombre_vendedor','nombre_comprador','tipo_demanda']:
         df[col] = df[col].astype('category')
     return df
 
 @st.cache_data
 def cargar_demanda():
-    df = pd.read_parquet(DEMANDA_PATH)
-    df = limpiar_columnas_texto(df, ['sector_consumo','nombre_operador','tipo_demanda'])
-    return df
+    return pd.read_parquet(DEMANDA_PATH)
 
 @st.cache_data
 def cargar_produccion():
-    df = pd.read_parquet(PRODUCCION_PATH)
-    df = limpiar_columnas_texto(df, ['operador','fuente','tipo_produccion'])
-    return df
+    return pd.read_parquet(PRODUCCION_PATH)
 
 @st.cache_data
 def cargar_potencial():
-    df = pd.read_parquet(POTENCIAL_PATH)
-    df = limpiar_columnas_texto(df, ['campo','razon_social','periodo'])
-    return df
+    return pd.read_parquet(POTENCIAL_PATH)
 
 @st.cache_data
 def cargar_nominaciones():
-    columnas = ['fecha_gas','numero_operacion','nombre_vendedor','nombre_comprador','sector_consumo',
+    columnas = ['fecha_gas','nombre_vendedor','nombre_comprador','sector_consumo',
                 'tipo_demanda','destino','punto_snt','cantidad_mbtud','estado']
     df = pd.read_parquet(NOMINACIONES_PATH, columns=columnas)
     df = df[df['estado'] == 'Registrado'].copy()
     df = df.drop(columns='estado')
-    df['numero_operacion'] = pd.to_numeric(df['numero_operacion'], errors='coerce')
-    df = df.dropna(subset=['numero_operacion'])
-    df['numero_operacion'] = df['numero_operacion'].astype('int64')
-    df = df.rename(columns={'numero_operacion': 'no_operacion'})
-    df = limpiar_columnas_texto(df, ['nombre_vendedor','nombre_comprador','sector_consumo','tipo_demanda','destino','punto_snt'])
     for col in ['nombre_vendedor','nombre_comprador','sector_consumo','tipo_demanda','destino','punto_snt']:
         df[col] = df[col].astype('category')
     return df
@@ -93,14 +57,12 @@ def fmt(valor, decimales=1):
     resultado = f"{valor:,.{decimales}f}"
     return resultado.replace(',','X').replace('.', ',').replace('X','.')
 
-def fix_encoding(texto):
-    """Repara mojibake típico (texto UTF-8 mal interpretado como Latin-1)."""
-    if pd.isna(texto):
-        return texto
-    try:
-        return texto.encode('latin1').decode('utf-8')
-    except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
-        return texto
+@st.cache_data
+def orden_operadores_produccion():
+    df_p = cargar_produccion()
+    return df_p.groupby('operador', observed=True)['energia_mbtu'].sum().sort_values(ascending=False).index.astype(str).tolist()
+
+orden_ops = orden_operadores_produccion()
 
 def agrupar(dff, granularidad):
     dff = dff.copy()
@@ -169,11 +131,6 @@ def agrupar_demanda(dff, granularidad):
     return grp
 
 def agrupar_nominaciones(dff, granularidad, col_agrup):
-    """
-    Agrupa nominaciones por periodo y col_agrup (nombre_vendedor o nombre_comprador).
-    cantidad_mbtud ya es MBTUD/día → dividir entre 1000 para GBTUD.
-    En agrupaciones > Diario se promedia sobre los días del período.
-    """
     dff = dff.copy()
     if granularidad == "Diario":
         dff['periodo'] = dff['fecha_gas'].dt.to_period('D')
@@ -198,7 +155,6 @@ def agrupar_nominaciones(dff, granularidad, col_agrup):
         temp['dias_mes'] = temp['fecha_gas'].dt.days_in_month
         dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
         dias.columns = ['periodo','dias_calendario']
-    # Primero sumar por día y agente, luego promediar al período
     grp_dia = dff.groupby(['fecha_gas', 'periodo', col_agrup], observed=True)['cantidad_mbtud'].sum().reset_index()
     grp = grp_dia.groupby(['periodo', col_agrup], observed=True)['cantidad_mbtud'].mean().reset_index()
     grp = grp.merge(dias, on='periodo')
@@ -207,7 +163,6 @@ def agrupar_nominaciones(dff, granularidad, col_agrup):
     return grp
 
 def agrupar_nominaciones_sector(dff, granularidad):
-    """Agrupación por sector_consumo para el tab Resumen."""
     dff = dff.copy()
     if granularidad == "Diario":
         dff['periodo'] = dff['fecha_gas'].dt.to_period('D')
@@ -238,204 +193,6 @@ def agrupar_nominaciones_sector(dff, granularidad):
     grp['gbtud'] = grp['cantidad_mbtud'] / 1000
     grp['periodo_str'] = grp['periodo'].astype(str)
     return grp
-
-def construir_filtros(df, key_prefix):
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    with col1: vendedor = st.multiselect("Vendedor", sorted(df['nombre_vendedor'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_vendedor")
-    with col2: comprador = st.multiselect("Comprador", sorted(df['nombre_comprador'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_comprador")
-    with col3: modalidad = st.multiselect("Modalidad", sorted(df['modalidad'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_modalidad")
-    with col4: sector = st.multiselect("Sector consumo", sorted(df['sector_consumo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_sector")
-    with col5: mercado = st.multiselect("Mercado", sorted(df['mercado'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_mercado")
-    with col6: tipo_demanda = st.multiselect("Tipo demanda", sorted(df['tipo_demanda'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_tipo_demanda")
-    return vendedor, comprador, modalidad, sector, mercado, tipo_demanda
-
-def construir_filtros_nominaciones(df_n, key_prefix):
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1: vendedor = st.multiselect("Vendedor", sorted(df_n['nombre_vendedor'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_vendedor")
-    with col2: comprador = st.multiselect("Comprador", sorted(df_n['nombre_comprador'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_comprador")
-    with col3: sector = st.multiselect("Sector consumo", sorted(df_n['sector_consumo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_sector")
-    with col4: tipo_demanda = st.multiselect("Tipo demanda", sorted(df_n['tipo_demanda'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_tipo_demanda")
-    with col5: destino = st.multiselect("Destino", sorted(df_n['destino'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_destino")
-    return vendedor, comprador, sector, tipo_demanda, destino
-
-def aplicar_filtros(dff, vendedor, comprador, modalidad, sector, mercado, tipo_demanda):
-    if vendedor: dff = dff[dff['nombre_vendedor'].isin(vendedor)]
-    if comprador: dff = dff[dff['nombre_comprador'].isin(comprador)]
-    if modalidad: dff = dff[dff['modalidad'].isin(modalidad)]
-    if sector: dff = dff[dff['sector_consumo'].isin(sector)]
-    if mercado: dff = dff[dff['mercado'].isin(mercado)]
-    if tipo_demanda: dff = dff[dff['tipo_demanda'].isin(tipo_demanda)]
-    return dff
-
-def aplicar_filtros_nominaciones(dff, vendedor, comprador, sector, tipo_demanda, destino):
-    if vendedor: dff = dff[dff['nombre_vendedor'].isin(vendedor)]
-    if comprador: dff = dff[dff['nombre_comprador'].isin(comprador)]
-    if sector: dff = dff[dff['sector_consumo'].isin(sector)]
-    if tipo_demanda: dff = dff[dff['tipo_demanda'].isin(tipo_demanda)]
-    if destino: dff = dff[dff['destino'].isin(destino)]
-    return dff
-
-def construir_grafico(grp, titulo):
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    orden_sectores = ['Residencial','Industrial','Comercial','GNVC','Generación Térmica',
-                    'Petroquímica','Petroquímica (Materia Prima)','Refinería',
-                    'Transportadores de Gas','Otros']
-    sectores_en_datos = [s for s in orden_sectores if s in grp['sector_consumo'].astype(str).unique()]
-    sectores_restantes = [s for s in grp['sector_consumo'].astype(str).unique() if s not in orden_sectores]
-    for sec in sectores_en_datos + sectores_restantes:
-        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
-        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']), secondary_y=False)
-    precio_line = grp.drop_duplicates('periodo_str')[['periodo_str','precio_ponderado']]
-    fig.add_trace(go.Scatter(name='Precio Ponderado', x=precio_line['periodo_str'], y=precio_line['precio_ponderado'],
-        mode='lines+markers', line=dict(color='purple', width=2)), secondary_y=True)
-    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
-    for _, row in totales.iterrows():
-        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
-            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
-    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
-    fig.update_yaxes(title_text="GBTUD", secondary_y=False)
-    fig.update_yaxes(title_text="Precio Ponderado (USD/MBTUD)", secondary_y=True)
-    return fig
-
-def construir_grafico_demanda(grp, titulo):
-    fig = go.Figure()
-    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
-        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
-        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']))
-    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
-    for _, row in totales.iterrows():
-        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
-            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
-    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.08))
-    return fig
-
-def construir_grafico_nom_sector(grp, titulo):
-    """Barras apiladas por sector_consumo para nominaciones."""
-    fig = go.Figure()
-    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
-        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
-        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']))
-    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
-    for _, row in totales.iterrows():
-        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
-            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
-    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.08))
-    return fig
-
-def construir_grafico_nom_agente(grp, col_agrup, titulo):
-    """Barras apiladas por vendedor o comprador para nominaciones."""
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    # Top agentes por volumen total para no saturar el gráfico
-    top_agentes = (grp.groupby(col_agrup, observed=True)['gbtud']
-                   .sum().sort_values(ascending=False).head(15).index.astype(str).tolist())
-    grp_plot = grp[grp[col_agrup].astype(str).isin(top_agentes)].copy()
-    otros = grp[~grp[col_agrup].astype(str).isin(top_agentes)].copy()
-    for agente in top_agentes:
-        data_ag = grp_plot[grp_plot[col_agrup].astype(str) == agente]
-        fig.add_trace(go.Bar(name=agente, x=data_ag['periodo_str'], y=data_ag['gbtud']), secondary_y=False)
-    if not otros.empty:
-        otros_grp = otros.groupby('periodo_str', observed=True)['gbtud'].sum().reset_index()
-        fig.add_trace(go.Bar(name='Otros', x=otros_grp['periodo_str'], y=otros_grp['gbtud'],
-                             marker_color='lightgray'), secondary_y=False)
-    # Línea de variación % total
-    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index(name='gbtud_total')
-    totales = totales.sort_values('periodo_str')
-    totales['var_pct'] = totales['gbtud_total'].pct_change() * 100
-    fig.add_trace(go.Scatter(name='Var% período anterior', x=totales['periodo_str'], y=totales['var_pct'],
-        mode='lines+markers', line=dict(color='red', width=2),
-        hovertemplate='%{x}<br>Var%: %{y:.1f}%<extra></extra>'), secondary_y=True)
-    for _, row in totales.iterrows():
-        fig.add_annotation(x=row['periodo_str'], y=row['gbtud_total'], text=fmt(row['gbtud_total'],1),
-            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
-    fig.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1, secondary_y=True)
-    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', height=480,
-                      legend=dict(orientation='v', x=1.08))
-    fig.update_yaxes(title_text="GBTUD", secondary_y=False)
-    fig.update_yaxes(title_text="Variación % período anterior", secondary_y=True)
-    return fig
-
-def pie_chart(data, col, titulo, col_cantidad):
-    grp = data.groupby(col, observed=True)[col_cantidad].sum().reset_index()
-    grp.columns = [col, 'cantidad']
-    grp = grp.sort_values('cantidad', ascending=False)
-    total = grp['cantidad'].sum()
-    grp['pct'] = grp['cantidad'] / total * 100
-    grp['label'] = grp[col].astype(str) + '<br>' + grp['pct'].apply(lambda x: fmt(x,1)) + '%'
-    fig = go.Figure(go.Pie(labels=grp[col].astype(str), values=grp['cantidad'], text=grp['label'],
-        textinfo='text', textposition='inside', insidetextorientation='radial', hole=0.3,
-        hovertemplate='%{label}<br>Valor: %{value:,.1f}<extra></extra>'))
-    fig.update_layout(title=titulo, height=400, showlegend=True, legend=dict(orientation='v', x=1.0, y=0.5), margin=dict(t=50,b=20,l=20,r=120))
-    return fig
-
-def bar_chart_top(data, col, titulo, col_cantidad, top_n=10):
-    grp = data.groupby(col, observed=True)[col_cantidad].sum().reset_index()
-    grp.columns = [col, 'cantidad']
-    grp = grp.sort_values('cantidad', ascending=False).head(top_n)
-    total = grp['cantidad'].sum()
-    grp['pct'] = grp['cantidad'] / total * 100
-    grp['label'] = grp['pct'].apply(lambda x: fmt(x,1)) + '%'
-    fig = go.Figure(go.Bar(x=grp['cantidad'], y=grp[col].astype(str), orientation='h',
-        text=grp['label'], textposition='outside', marker_color='steelblue',
-        hovertemplate='%{y}<br>Valor: %{x:,.1f}<extra></extra>'))
-    fig.update_layout(title=titulo, height=350, yaxis=dict(autorange='reversed'), margin=dict(t=50,b=20,l=20,r=20), xaxis_title='GBTUD')
-    return fig
-
-def construir_estacionalidad(dff):
-    dff = dff.copy()
-    dff['mes'] = dff['fecha_registro'].dt.month
-    dff['dias_mes'] = dff['fecha_registro'].dt.days_in_month
-    grp = dff.groupby(['mes','dias_mes'])['cantidad_entregada'].sum().reset_index()
-    anios = dff['fecha_registro'].dt.year.nunique()
-    grp['gbtud'] = grp['cantidad_entregada'] / (grp['dias_mes']*1000*anios)
-    meses_nombre = {1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'}
-    grp['mes_str'] = grp['mes'].map(meses_nombre)
-    fig = go.Figure(go.Bar(x=grp['mes_str'], y=grp['gbtud'], text=grp['gbtud'].apply(lambda x: fmt(x,1)),
-        textposition='outside', marker_color='steelblue'))
-    fig.update_layout(title='Estacionalidad — Promedio histórico por mes (GBTUD)', xaxis_title='', yaxis_title='GBTUD', height=400)
-    return fig
-
-def construir_tabla_resumen(dff):
-    anios = sorted(dff['fecha_registro'].dt.year.unique())
-    if len(anios) < 2:
-        st.warning("No hay suficientes años para calcular variaciones.")
-        return
-    anio_t = anios[-1]
-    anio_t1 = anios[-2]
-    dff = dff.copy()
-    dff['anio'] = dff['fecha_registro'].dt.year
-    grp = dff.groupby(['nombre_operador','sector_consumo','anio'], observed=True)['cantidad_entregada'].sum().reset_index()
-    pivot = grp.pivot_table(index=['nombre_operador','sector_consumo'], columns='anio', values='cantidad_entregada', fill_value=0).reset_index()
-    pivot.columns.name = None
-    for a in anios:
-        if a not in pivot.columns: pivot[a] = 0
-    op_totals = pivot.groupby('nombre_operador')[[a for a in anios]].sum().reset_index()
-    op_totals['sector_consumo'] = '— TOTAL —'
-    nacional = {a: pivot[a].sum() for a in anios}
-    pivot['var_pct'] = (pivot[anio_t]-pivot[anio_t1])/pivot[anio_t1].replace(0,float('nan'))*100
-    op_t1 = op_totals[['nombre_operador',anio_t1]].rename(columns={anio_t1:'op_t1'})
-    pivot = pivot.merge(op_t1, on='nombre_operador')
-    pivot['pp_op'] = (pivot[anio_t]-pivot[anio_t1])/pivot['op_t1'].replace(0,float('nan'))*100
-    op_totals['var_pct'] = (op_totals[anio_t]-op_totals[anio_t1])/op_totals[anio_t1].replace(0,float('nan'))*100
-    op_totals['pp_nac'] = (op_totals[anio_t]-op_totals[anio_t1])/nacional[anio_t1]*100
-    filas = []
-    for op in sorted(pivot['nombre_operador'].astype(str).unique()):
-        op_row = op_totals[op_totals['nombre_operador']==op].iloc[0]
-        fila_op = {'Operador / Sector': f'▶ {op}'}
-        for a in anios: fila_op[str(a)] = fmt(op_row[a]/1000,1)
-        fila_op[f'Var% {anio_t1}-{anio_t}'] = fmt(op_row['var_pct'],1)+'%' if not pd.isna(op_row['var_pct']) else 'N/D'
-        fila_op['PP → Nacional'] = fmt(op_row['pp_nac'],2)+' pp' if not pd.isna(op_row['pp_nac']) else 'N/D'
-        fila_op['PP → Op'] = ''
-        filas.append(fila_op)
-        sectores_op = pivot[pivot['nombre_operador']==op].sort_values(anio_t, ascending=False)
-        for _, row in sectores_op.iterrows():
-            fila_sec = {'Operador / Sector': f'   → {row["sector_consumo"]}'}
-            for a in anios: fila_sec[str(a)] = fmt(row[a]/1000,1)
-            fila_sec[f'Var% {anio_t1}-{anio_t}'] = fmt(row['var_pct'],1)+'%' if not pd.isna(row['var_pct']) else 'N/D'
-            fila_sec['PP → Nacional'] = ''
-            fila_sec['PP → Op'] = fmt(row['pp_op'],2)+' pp' if not pd.isna(row['pp_op']) else 'N/D'
-            filas.append(fila_sec)
-    st.dataframe(pd.DataFrame(filas), use_container_width=True, height=500)
 
 def agrupar_balance(dff_cont, dff_dem, granularidad):
     dff_cont = dff_cont.copy()
@@ -495,216 +252,203 @@ def agrupar_balance(dff_cont, dff_dem, granularidad):
     balance['pct_sobre_demanda'] = (balance['diferencia'] / balance['gbtud_dem'].replace(0,float('nan')) * 100)
     return balance
 
-def bar_chart_top_gbtud(data, col, titulo, n_dias, top_n=10):
-    """Ranking top N por GBTUD/día promedio en el intervalo (divide el acumulado entre n_dias)."""
-    grp = data.groupby(['fecha_gas', col], observed=True)['cantidad_mbtud'].sum().reset_index()
-    grp = grp.groupby(col, observed=True)['cantidad_mbtud'].sum().reset_index()
-    grp['gbtud'] = grp['cantidad_mbtud'] / 1000 / n_dias
-    grp = grp.sort_values('gbtud', ascending=False).head(top_n)
-    grp['label'] = grp['gbtud'].apply(lambda x: fmt(x,1)) + ' GBTUD'
-    fig = go.Figure(go.Bar(x=grp['gbtud'], y=grp[col].astype(str), orientation='h',
+def construir_filtros(df, key_prefix):
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1: vendedor = st.multiselect("Vendedor", sorted(df['nombre_vendedor'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_vendedor")
+    with col2: comprador = st.multiselect("Comprador", sorted(df['nombre_comprador'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_comprador")
+    with col3: modalidad = st.multiselect("Modalidad", sorted(df['modalidad'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_modalidad")
+    with col4: sector = st.multiselect("Sector consumo", sorted(df['sector_consumo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_sector")
+    with col5: mercado = st.multiselect("Mercado", sorted(df['mercado'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_mercado")
+    with col6: tipo_demanda = st.multiselect("Tipo demanda", sorted(df['tipo_demanda'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_tipo_demanda")
+    return vendedor, comprador, modalidad, sector, mercado, tipo_demanda
+
+def construir_filtros_nominaciones(df_n, key_prefix):
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1: vendedor = st.multiselect("Vendedor", sorted(df_n['nombre_vendedor'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_vendedor")
+    with col2: comprador = st.multiselect("Comprador", sorted(df_n['nombre_comprador'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_comprador")
+    with col3: sector = st.multiselect("Sector consumo", sorted(df_n['sector_consumo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_sector")
+    with col4: tipo_demanda = st.multiselect("Tipo demanda", sorted(df_n['tipo_demanda'].dropna().astype(str).unique().tolist()), placeholder="Todas", key=f"{key_prefix}_tipo_demanda")
+    with col5: destino = st.multiselect("Destino", sorted(df_n['destino'].dropna().astype(str).unique().tolist()), placeholder="Todos", key=f"{key_prefix}_destino")
+    return vendedor, comprador, sector, tipo_demanda, destino
+
+def aplicar_filtros(dff, vendedor, comprador, modalidad, sector, mercado, tipo_demanda):
+    if vendedor: dff = dff[dff['nombre_vendedor'].isin(vendedor)]
+    if comprador: dff = dff[dff['nombre_comprador'].isin(comprador)]
+    if modalidad: dff = dff[dff['modalidad'].isin(modalidad)]
+    if sector: dff = dff[dff['sector_consumo'].isin(sector)]
+    if mercado: dff = dff[dff['mercado'].isin(mercado)]
+    if tipo_demanda: dff = dff[dff['tipo_demanda'].isin(tipo_demanda)]
+    return dff
+
+def aplicar_filtros_nominaciones(dff, vendedor, comprador, sector, tipo_demanda, destino):
+    if vendedor: dff = dff[dff['nombre_vendedor'].isin(vendedor)]
+    if comprador: dff = dff[dff['nombre_comprador'].isin(comprador)]
+    if sector: dff = dff[dff['sector_consumo'].isin(sector)]
+    if tipo_demanda: dff = dff[dff['tipo_demanda'].isin(tipo_demanda)]
+    if destino: dff = dff[dff['destino'].isin(destino)]
+    return dff
+
+def construir_grafico(grp, titulo):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
+        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
+        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']), secondary_y=False)
+    precio_line = grp.drop_duplicates('periodo_str')[['periodo_str','precio_ponderado']]
+    fig.add_trace(go.Scatter(name='Precio Ponderado', x=precio_line['periodo_str'], y=precio_line['precio_ponderado'],
+        mode='lines+markers', line=dict(color='purple', width=2)), secondary_y=True)
+    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
+    for _, row in totales.iterrows():
+        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
+    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
+    fig.update_yaxes(title_text="GBTUD", secondary_y=False)
+    fig.update_yaxes(title_text="Precio Ponderado (USD/MBTUD)", secondary_y=True)
+    return fig
+
+def construir_grafico_demanda(grp, titulo):
+    fig = go.Figure()
+    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
+        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
+        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']))
+    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
+    for _, row in totales.iterrows():
+        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
+    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.08))
+    return fig
+
+def construir_grafico_nom_sector(grp, titulo):
+    fig = go.Figure()
+    for sec in sorted(grp['sector_consumo'].astype(str).unique()):
+        data_sec = grp[grp['sector_consumo'].astype(str) == sec]
+        fig.add_trace(go.Bar(name=sec, x=data_sec['periodo_str'], y=data_sec['gbtud']))
+    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index()
+    for _, row in totales.iterrows():
+        fig.add_annotation(x=row['periodo_str'], y=row['gbtud'], text=fmt(row['gbtud'],1),
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
+    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.08))
+    return fig
+
+def construir_grafico_nom_agente(grp, col_agrup, titulo):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    top_agentes = (grp.groupby(col_agrup, observed=True)['gbtud']
+                   .sum().sort_values(ascending=False).head(15).index.astype(str).tolist())
+    grp_plot = grp[grp[col_agrup].astype(str).isin(top_agentes)].copy()
+    otros = grp[~grp[col_agrup].astype(str).isin(top_agentes)].copy()
+    for agente in top_agentes:
+        data_ag = grp_plot[grp_plot[col_agrup].astype(str) == agente]
+        fig.add_trace(go.Bar(name=agente, x=data_ag['periodo_str'], y=data_ag['gbtud']), secondary_y=False)
+    if not otros.empty:
+        otros_grp = otros.groupby('periodo_str', observed=True)['gbtud'].sum().reset_index()
+        fig.add_trace(go.Bar(name='Otros', x=otros_grp['periodo_str'], y=otros_grp['gbtud'], marker_color='lightgray'), secondary_y=False)
+    totales = grp.groupby('periodo_str')['gbtud'].sum().reset_index(name='gbtud_total')
+    totales = totales.sort_values('periodo_str')
+    totales['var_pct'] = totales['gbtud_total'].pct_change() * 100
+    fig.add_trace(go.Scatter(name='Var% período anterior', x=totales['periodo_str'], y=totales['var_pct'],
+        mode='lines+markers', line=dict(color='red', width=2),
+        hovertemplate='%{x}<br>Var%: %{y:.1f}%<extra></extra>'), secondary_y=True)
+    for _, row in totales.iterrows():
+        fig.add_annotation(x=row['periodo_str'], y=row['gbtud_total'], text=fmt(row['gbtud_total'],1),
+            showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
+    fig.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1, secondary_y=True)
+    fig.update_layout(barmode='stack', title=titulo, xaxis_title='Período', height=480, legend=dict(orientation='v', x=1.08))
+    fig.update_yaxes(title_text="GBTUD", secondary_y=False)
+    fig.update_yaxes(title_text="Variación % período anterior", secondary_y=True)
+    return fig
+
+def pie_chart(data, col, titulo, col_cantidad):
+    grp = data.groupby(col, observed=True)[col_cantidad].sum().reset_index()
+    grp.columns = [col, 'cantidad']
+    grp = grp.sort_values('cantidad', ascending=False)
+    total = grp['cantidad'].sum()
+    grp['pct'] = grp['cantidad'] / total * 100
+    grp['label'] = grp[col].astype(str) + '<br>' + grp['pct'].apply(lambda x: fmt(x,1)) + '%'
+    fig = go.Figure(go.Pie(labels=grp[col].astype(str), values=grp['cantidad'], text=grp['label'],
+        textinfo='text', textposition='inside', insidetextorientation='radial', hole=0.3,
+        hovertemplate='%{label}<br>Valor: %{value:,.1f}<extra></extra>'))
+    fig.update_layout(title=titulo, height=400, showlegend=True, legend=dict(orientation='v', x=1.0, y=0.5), margin=dict(t=50,b=20,l=20,r=120))
+    return fig
+
+def bar_chart_top(data, col, titulo, col_cantidad, top_n=10):
+    grp = data.groupby(col, observed=True)[col_cantidad].sum().reset_index()
+    grp.columns = [col, 'cantidad']
+    grp = grp.sort_values('cantidad', ascending=False).head(top_n)
+    total = grp['cantidad'].sum()
+    grp['pct'] = grp['cantidad'] / total * 100
+    grp['label'] = grp['pct'].apply(lambda x: fmt(x,1)) + '%'
+    fig = go.Figure(go.Bar(x=grp['cantidad'], y=grp[col].astype(str), orientation='h',
         text=grp['label'], textposition='outside', marker_color='steelblue',
-        hovertemplate='%{y}<br>GBTUD: %{x:,.1f}<extra></extra>'))
+        hovertemplate='%{y}<br>Valor: %{x:,.1f}<extra></extra>'))
     fig.update_layout(title=titulo, height=350, yaxis=dict(autorange='reversed'), margin=dict(t=50,b=20,l=20,r=20), xaxis_title='GBTUD')
     return fig
 
-def cruzar_matched_periodo(dff_cont, dff_nom, granularidad):
-    """Compara Contratado vs Nominado por período, usando SOLO las operaciones que cruzan (existen en ambos lados)."""
-    ops_cont = set(dff_cont['no_operacion'].dropna().unique())
-    ops_nom = set(dff_nom['no_operacion'].dropna().unique())
-    ops_cruzan = ops_cont & ops_nom
-
-    dff_cont_m = dff_cont[dff_cont['no_operacion'].isin(ops_cruzan)]
-    dff_nom_m = dff_nom[dff_nom['no_operacion'].isin(ops_cruzan)]
-
-    grp_cont = agrupar_contratos_total(dff_cont_m, granularidad) if not dff_cont_m.empty else pd.DataFrame(columns=['periodo_str','gbtud_cont'])
-    grp_nom = agrupar_nominaciones_total(dff_nom_m, granularidad) if not dff_nom_m.empty else pd.DataFrame(columns=['periodo_str','gbtud_nom'])
-
-    comp = grp_cont.merge(grp_nom, on='periodo_str', how='outer').fillna(0)
-    comp = comp.sort_values('periodo_str')
-    comp['diferencia'] = comp['gbtud_cont'] - comp['gbtud_nom']
-    comp['pct_cumplimiento'] = comp['gbtud_nom'] / comp['gbtud_cont'].replace(0, float('nan')) * 100
-
-    cobertura = {
-        'n_ops_cont': len(ops_cont),
-        'n_ops_nom': len(ops_nom),
-        'n_cruzan': len(ops_cruzan),
-        'n_huerfanas_nom': len(ops_nom - ops_cont),
-        'n_huerfanas_cont': len(ops_cont - ops_nom),
-    }
-    return comp, cobertura
-
-def ranking_agente_cruce(dff_cont, dff_nom, col_agrup, n_dias, top_n=15):
-    """Ranking por agente (vendedor o comprador) de Contratado vs Nominado, usando solo operaciones que cruzan."""
-    ops_cont = set(dff_cont['no_operacion'].dropna().unique())
-    ops_nom = set(dff_nom['no_operacion'].dropna().unique())
-    ops_cruzan = ops_cont & ops_nom
-
-    dff_cont_m = dff_cont[dff_cont['no_operacion'].isin(ops_cruzan)]
-    dff_nom_m = dff_nom[dff_nom['no_operacion'].isin(ops_cruzan)]
-
-    grp_cont = dff_cont_m.groupby(col_agrup, observed=True)['cantidad'].sum().reset_index()
-    grp_cont['gbtud_cont'] = grp_cont['cantidad'] / (n_dias*1000)
-
-    grp_nom_dia = dff_nom_m.groupby(['fecha_gas', col_agrup], observed=True)['cantidad_mbtud'].sum().reset_index()
-    grp_nom = grp_nom_dia.groupby(col_agrup, observed=True)['cantidad_mbtud'].sum().reset_index()
-    grp_nom['gbtud_nom'] = grp_nom['cantidad_mbtud'] / 1000 / n_dias
-
-    comp = grp_cont[[col_agrup,'gbtud_cont']].merge(grp_nom[[col_agrup,'gbtud_nom']], on=col_agrup, how='outer').fillna(0)
-    comp['diferencia'] = comp['gbtud_cont'] - comp['gbtud_nom']
-    comp['pct_cumplimiento'] = comp['gbtud_nom'] / comp['gbtud_cont'].replace(0, float('nan')) * 100
-    comp = comp.sort_values('gbtud_cont', ascending=False).head(top_n)
-    return comp
-
-def construir_grafico_cruce_periodo(comp, titulo):
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Bar(name='Contratado', x=comp['periodo_str'], y=comp['gbtud_cont'], marker_color='steelblue'), secondary_y=False)
-    fig.add_trace(go.Bar(name='Nominado', x=comp['periodo_str'], y=comp['gbtud_nom'], marker_color='darkorange'), secondary_y=False)
-    fig.add_trace(go.Scatter(name='% Cumplimiento', x=comp['periodo_str'], y=comp['pct_cumplimiento'],
-        mode='lines+markers', line=dict(color='red', width=2)), secondary_y=True)
-    fig.add_hline(y=100, line_dash='dash', line_color='gray', line_width=1, secondary_y=True)
-    fig.update_layout(barmode='group', title=titulo, xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
-    fig.update_yaxes(title_text="GBTUD", secondary_y=False)
-    fig.update_yaxes(title_text="% Cumplimiento", secondary_y=True)
+def construir_estacionalidad(dff):
+    dff = dff.copy()
+    dff['mes'] = dff['fecha_registro'].dt.month
+    dff['dias_mes'] = dff['fecha_registro'].dt.days_in_month
+    grp = dff.groupby(['mes','dias_mes'])['cantidad_entregada'].sum().reset_index()
+    anios = dff['fecha_registro'].dt.year.nunique()
+    grp['gbtud'] = grp['cantidad_entregada'] / (grp['dias_mes']*1000*anios)
+    meses_nombre = {1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'}
+    grp['mes_str'] = grp['mes'].map(meses_nombre)
+    fig = go.Figure(go.Bar(x=grp['mes_str'], y=grp['gbtud'], text=grp['gbtud'].apply(lambda x: fmt(x,1)),
+        textposition='outside', marker_color='steelblue'))
+    fig.update_layout(title='Estacionalidad — Promedio histórico por mes (GBTUD)', xaxis_title='', yaxis_title='GBTUD', height=400)
     return fig
 
-def construir_grafico_ranking_cruce(comp, col_agrup, titulo):
-    comp = comp.sort_values('gbtud_cont', ascending=True)  # ascendente para que el mayor quede arriba en horizontal
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Contratado', x=comp['gbtud_cont'], y=comp[col_agrup].astype(str), orientation='h', marker_color='steelblue'))
-    fig.add_trace(go.Bar(name='Nominado', x=comp['gbtud_nom'], y=comp[col_agrup].astype(str), orientation='h', marker_color='darkorange'))
-    fig.update_layout(barmode='group', title=titulo, xaxis_title='GBTUD/día', height=450, legend=dict(orientation='v', x=1.02))
-    return fig
+def construir_tabla_resumen(dff):
+    anios = sorted(dff['fecha_registro'].dt.year.unique())
+    if len(anios) < 2:
+        st.warning("No hay suficientes años para calcular variaciones.")
+        return
+    anio_t = anios[-1]; anio_t1 = anios[-2]
+    dff = dff.copy()
+    dff['anio'] = dff['fecha_registro'].dt.year
+    grp = dff.groupby(['nombre_operador','sector_consumo','anio'], observed=True)['cantidad_entregada'].sum().reset_index()
+    pivot = grp.pivot_table(index=['nombre_operador','sector_consumo'], columns='anio', values='cantidad_entregada', fill_value=0).reset_index()
+    pivot.columns.name = None
+    for a in anios:
+        if a not in pivot.columns: pivot[a] = 0
+    op_totals = pivot.groupby('nombre_operador')[[a for a in anios]].sum().reset_index()
+    op_totals['sector_consumo'] = '— TOTAL —'
+    nacional = {a: pivot[a].sum() for a in anios}
+    pivot['var_pct'] = (pivot[anio_t]-pivot[anio_t1])/pivot[anio_t1].replace(0,float('nan'))*100
+    op_t1 = op_totals[['nombre_operador',anio_t1]].rename(columns={anio_t1:'op_t1'})
+    pivot = pivot.merge(op_t1, on='nombre_operador')
+    pivot['pp_op'] = (pivot[anio_t]-pivot[anio_t1])/pivot['op_t1'].replace(0,float('nan'))*100
+    op_totals['var_pct'] = (op_totals[anio_t]-op_totals[anio_t1])/op_totals[anio_t1].replace(0,float('nan'))*100
+    op_totals['pp_nac'] = (op_totals[anio_t]-op_totals[anio_t1])/nacional[anio_t1]*100
+    filas = []
+    for op in sorted(pivot['nombre_operador'].astype(str).unique()):
+        op_row = op_totals[op_totals['nombre_operador']==op].iloc[0]
+        fila_op = {'Operador / Sector': f'▶ {op}'}
+        for a in anios: fila_op[str(a)] = fmt(op_row[a]/1000,1)
+        fila_op[f'Var% {anio_t1}-{anio_t}'] = fmt(op_row['var_pct'],1)+'%' if not pd.isna(op_row['var_pct']) else 'N/D'
+        fila_op['PP → Nacional'] = fmt(op_row['pp_nac'],2)+' pp' if not pd.isna(op_row['pp_nac']) else 'N/D'
+        fila_op['PP → Op'] = ''
+        filas.append(fila_op)
+        sectores_op = pivot[pivot['nombre_operador']==op].sort_values(anio_t, ascending=False)
+        for _, row in sectores_op.iterrows():
+            fila_sec = {'Operador / Sector': f'   → {row["sector_consumo"]}'}
+            for a in anios: fila_sec[str(a)] = fmt(row[a]/1000,1)
+            fila_sec[f'Var% {anio_t1}-{anio_t}'] = fmt(row['var_pct'],1)+'%' if not pd.isna(row['var_pct']) else 'N/D'
+            fila_sec['PP → Nacional'] = ''
+            fila_sec['PP → Op'] = fmt(row['pp_op'],2)+' pp' if not pd.isna(row['pp_op']) else 'N/D'
+            filas.append(fila_sec)
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, height=500)
 
-# ── Sidebar ──────────────────────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("⛽ Gas Natural")
     st.markdown("---")
     seccion = st.radio("Sección",
         ["⛽ Contratación","📊 Demanda","🔄 Balance de Mercado",
-         "🔋 Producción","⚡ Declaración de Producción","📋 Nominaciones"],
+         "🔋 Producción","⚡ Declaración de Producción","🚨 Alertas y Riesgo","📋 Nominaciones"],
         label_visibility="collapsed")
     st.markdown("---")
     st.caption(f"Contratos al: {df['fecha_dia'].max().strftime('%d/%m/%Y')}")
     st.caption(f"Demanda al: {df_dem['fecha_registro'].max().strftime('%d/%m/%Y')}")
     st.caption(f"Nominaciones al: {df_nom['fecha_gas'].max().strftime('%d/%m/%Y')}")
-    
-    if st.button("🔄 Actualizar datos"):
-        st.cache_data.clear()
-        st.rerun()
-
-def agrupar_contratos_total(dff, granularidad):
-    """Agrupa contratos por período, total (sin split por sector). Devuelve periodo_str y gbtud_cont."""
-    dff = dff.copy()
-    if granularidad == "Diario":
-        dff['periodo'] = dff['fecha_dia'].dt.to_period('D')
-        dias = dff.groupby('periodo', observed=True)['fecha_dia'].first().reset_index()
-        dias['dias_calendario'] = 1
-        dias = dias[['periodo','dias_calendario']]
-    elif granularidad == "Mensual":
-        dff['periodo'] = dff['fecha_dia'].dt.to_period('M')
-        dias = dff.groupby('periodo', observed=True)['fecha_dia'].first().dt.days_in_month.reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    elif granularidad == "Trimestral":
-        dff['periodo'] = dff['fecha_dia'].dt.to_period('Q')
-        temp = dff[['periodo','fecha_dia']].drop_duplicates('fecha_dia').copy()
-        temp['mes'] = temp['fecha_dia'].dt.to_period('M')
-        temp['dias_mes'] = temp['fecha_dia'].dt.days_in_month
-        dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    elif granularidad == "Anual":
-        dff['periodo'] = dff['fecha_dia'].dt.to_period('Y')
-        temp = dff[['periodo','fecha_dia']].drop_duplicates('fecha_dia').copy()
-        temp['mes'] = temp['fecha_dia'].dt.to_period('M')
-        temp['dias_mes'] = temp['fecha_dia'].dt.days_in_month
-        dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    grp = dff.groupby('periodo', observed=True)['cantidad'].sum().reset_index()
-    grp = grp.merge(dias, on='periodo')
-    grp['gbtud_cont'] = grp['cantidad'] / (grp['dias_calendario']*1000)
-    grp['periodo_str'] = grp['periodo'].astype(str)
-    return grp[['periodo_str','gbtud_cont']]
-
-def agrupar_nominaciones_total(dff, granularidad):
-    """Agrupa nominaciones por período (dff ya filtrado a una empresa). Suma diaria, luego promedio del período."""
-    dff = dff.copy()
-    if granularidad == "Diario":
-        dff['periodo'] = dff['fecha_gas'].dt.to_period('D')
-        dias = dff.groupby('periodo', observed=True)['fecha_gas'].first().reset_index()
-        dias['dias_calendario'] = 1
-        dias = dias[['periodo','dias_calendario']]
-    elif granularidad == "Mensual":
-        dff['periodo'] = dff['fecha_gas'].dt.to_period('M')
-        dias = dff.groupby('periodo', observed=True)['fecha_gas'].first().dt.days_in_month.reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    elif granularidad == "Trimestral":
-        dff['periodo'] = dff['fecha_gas'].dt.to_period('Q')
-        temp = dff[['periodo','fecha_gas']].drop_duplicates('fecha_gas').copy()
-        temp['mes'] = temp['fecha_gas'].dt.to_period('M')
-        temp['dias_mes'] = temp['fecha_gas'].dt.days_in_month
-        dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    elif granularidad == "Anual":
-        dff['periodo'] = dff['fecha_gas'].dt.to_period('Y')
-        temp = dff[['periodo','fecha_gas']].drop_duplicates('fecha_gas').copy()
-        temp['mes'] = temp['fecha_gas'].dt.to_period('M')
-        temp['dias_mes'] = temp['fecha_gas'].dt.days_in_month
-        dias = temp.drop_duplicates('mes').groupby('periodo', observed=True)['dias_mes'].sum().reset_index()
-        dias.columns = ['periodo','dias_calendario']
-    grp_dia = dff.groupby(['fecha_gas','periodo'], observed=True)['cantidad_mbtud'].sum().reset_index()
-    grp = grp_dia.groupby('periodo', observed=True)['cantidad_mbtud'].mean().reset_index()
-    grp = grp.merge(dias, on='periodo')
-    grp['gbtud_nom'] = grp['cantidad_mbtud'] / 1000
-    grp['periodo_str'] = grp['periodo'].astype(str)
-    return grp[['periodo_str','gbtud_nom']]
-
-def construir_tabla_nominacion_detalle(dff_nom, col_agrup, col_detalle):
-    """Tabla: filas = agente + (tipo_demanda o sector_consumo), columnas = fecha_gas diaria, valores = MBTUD nominado.
-    Excluye filas (agente y detalle) cuyo total sea 0 en todo el período."""
-    if dff_nom.empty:
-        return pd.DataFrame()
-
-    dff = dff_nom.copy()
-    dff[col_detalle] = dff[col_detalle].astype(str)
-    dff['fecha_col'] = dff['fecha_gas'].apply(fecha_corta_es)
-    orden_fechas = (dff[['fecha_gas','fecha_col']].drop_duplicates()
-                    .sort_values('fecha_gas')['fecha_col'].tolist())
-
-    grp = dff.groupby([col_agrup, col_detalle, 'fecha_col'], observed=True)['cantidad_mbtud'].sum().reset_index()
-    pivot = grp.pivot_table(index=[col_agrup, col_detalle], columns='fecha_col', values='cantidad_mbtud', fill_value=0)
-    pivot = pivot.reindex(columns=orden_fechas, fill_value=0)
-
-    # Excluir combinaciones (agente, detalle) cuyo total en el período sea 0
-    pivot = pivot[pivot.sum(axis=1) > 0]
-
-    if pivot.empty:
-        return pd.DataFrame()
-
-    # Excluir agentes cuyo total (todas sus filas de detalle) sea 0
-    totales_agente = pivot.groupby(level=0).sum().sum(axis=1)
-    agentes = sorted(totales_agente[totales_agente > 0].index.astype(str).unique())
-
-    filas = []
-    for agente in agentes:
-        sub = pivot.loc[agente]
-        if isinstance(sub, pd.Series):  # un solo detalle para este agente -> Series, no DataFrame
-            sub = sub.to_frame().T
-            sub.index = [pivot.loc[agente].name] if hasattr(pivot.loc[agente], 'name') else sub.index
-        fila_agente = {'Agente / Detalle': f'▶ {agente}'}
-        for col in orden_fechas:
-            fila_agente[col] = fmt(sub[col].sum(), 0)
-        filas.append(fila_agente)
-        for detalle in sorted(sub.index.astype(str)):
-            fila_det = {'Agente / Detalle': f'   → {detalle}'}
-            for col in orden_fechas:
-                fila_det[col] = fmt(sub.loc[detalle, col], 0)
-            filas.append(fila_det)
-    return pd.DataFrame(filas)
-
-MESES_ES = {1:'ene',2:'feb',3:'mar',4:'abr',5:'may',6:'jun',7:'jul',8:'ago',9:'sep',10:'oct',11:'nov',12:'dic'}
-
-def fecha_corta_es(fecha):
-    return f"{fecha.day:02d} {MESES_ES[fecha.month]}"
 
 # ── Contratación ──────────────────────────────────────────────────────────────
 if seccion == "⛽ Contratación":
@@ -989,13 +733,6 @@ elif seccion == "🔄 Balance de Mercado":
 elif seccion == "🔋 Producción":
     st.title("🔋 Producción de Gas Natural")
     tab_p1, tab_p2 = st.tabs(["📊 Producción","🔍 Análisis de Producción"])
-
-    @st.cache_data
-    def orden_operadores_produccion():
-        df_p = cargar_produccion()
-        return df_p.groupby('operador', observed=True)['energia_mbtu'].sum().sort_values(ascending=False).index.astype(str).tolist()
-
-    orden_ops = orden_operadores_produccion()
     df_prod = cargar_produccion()
 
     with tab_p1:
@@ -1044,15 +781,17 @@ elif seccion == "🔋 Producción":
         total_per['periodo_str'] = total_per['periodo'].astype(str)
         fig_p = make_subplots(specs=[[{"secondary_y": True}]])
         ops_en_grp = [o for o in orden_ops if o in grp_p['operador'].astype(str).unique()]
-        for op in ops_en_grp:
+        for i, op in enumerate(ops_en_grp):
             data_op = grp_p[grp_p['operador'].astype(str)==op]
-            fig_p.add_trace(go.Bar(name=op, x=data_op['periodo_str'], y=data_op['gbtud']), secondary_y=False)
+            fig_p.add_trace(go.Bar(name=op, x=data_op['periodo_str'], y=data_op['gbtud'], legendrank=i+1), secondary_y=False)
         fig_p.add_trace(go.Scatter(name='Var% período anterior', x=total_per['periodo_str'], y=total_per['var_pct'],
-            mode='lines+markers', line=dict(color='red', width=2), hovertemplate='%{x}<br>Var%: %{y:.1f}%<extra></extra>'), secondary_y=True)
+            mode='lines+markers', line=dict(color='red', width=2), hovertemplate='%{x}<br>Var%: %{y:.1f}%<extra></extra>',
+            legendrank=len(ops_en_grp)+1), secondary_y=True)
         for _, row in total_per.iterrows():
             fig_p.add_annotation(x=row['periodo_str'], y=row['gbtud_total'], text=fmt(row['gbtud_total'],1),
                 showarrow=False, textangle=-90, font=dict(size=14, color='black'), yshift=18)
-        fig_p.update_layout(barmode='stack', title='Producción (GBTUD) por Operador', xaxis_title='Período', height=450, legend=dict(orientation='v', x=1.08))
+        fig_p.update_layout(barmode='stack', title='Producción (GBTUD) por Operador', xaxis_title='Período', height=450,
+            legend=dict(traceorder='normal', orientation='v', x=1.08))
         fig_p.update_yaxes(title_text="GBTUD", secondary_y=False)
         fig_p.update_yaxes(title_text="Variación % período anterior", secondary_y=True)
         fig_p.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1, secondary_y=True)
@@ -1088,7 +827,7 @@ elif seccion == "🔋 Producción":
 # ── Declaración de Producción ─────────────────────────────────────────────────
 elif seccion == "⚡ Declaración de Producción":
     st.title("⚡ Declaración de Producción")
-    tab_dp1, tab_dp2 = st.tabs(["📈 Potencial de Producción","⚖️ PP vs Contratación vs PTDV"])
+    tab_dp1, tab_dp2 = st.tabs(["📈 Potencial de Producción","⚖️ PP vs PC vs PTDV"])
 
     with tab_dp1:
         st.subheader("Potencial de Producción (GBTUD) según Declaratoria")
@@ -1128,7 +867,7 @@ elif seccion == "⚡ Declaración de Producción":
             grp_plot['eje'] = grp_plot['anio'].astype(str)
         elif dp_gran == "Trimestral":
             grp_plot = grp_mes.groupby(['trimestre','periodo'], observed=True)['gbtud'].mean().reset_index()
-            grp_plot['eje'] = grp_plot['trimestre']
+            grp_plot['eje'] = grp_plot['trimestre'].str.replace(r'(\d{4})Q(\d)', lambda m: f"{m.group(1)}-T{m.group(2)}", regex=True)
         else:
             grp_plot = grp_mes.copy()
             grp_plot['eje'] = grp_plot['mes_str']
@@ -1137,81 +876,104 @@ elif seccion == "⚡ Declaración de Producción":
         for per in sorted(grp_plot['periodo'].astype(str).unique()):
             data_per = grp_plot[grp_plot['periodo'].astype(str)==per]
             fig_plot.add_trace(go.Scatter(name=per, x=data_per['eje'], y=data_per['gbtud'], mode='lines+markers', fill='tozeroy'))
-        fig_plot.update_layout(title=f'Potencial de Producción (GBTUD) — {dp_variable} — {dp_gran}', xaxis_title=dp_gran, yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.02))
+        fig_plot.update_layout(title=f'Potencial de Producción (GBTUD) — {dp_variable} — {dp_gran}',
+            xaxis_title=dp_gran, yaxis_title='GBTUD', height=450,
+            legend=dict(orientation='v', x=1.02), xaxis=dict(tickangle=-90))
         st.plotly_chart(fig_plot, use_container_width=True)
 
         if len(dp_declaratoria) >= 2:
             st.markdown("---")
             st.subheader("Variaciones entre Declaratorias")
-            tabla_var = grp_mes.pivot_table(index='mes_str', columns='periodo', values='gbtud').reset_index()
+            if dp_gran == "Anual":
+                grp_tabla = grp_mes.groupby(['anio','periodo'], observed=True)['gbtud'].mean().reset_index()
+                grp_tabla['eje'] = grp_tabla['anio'].astype(str)
+            elif dp_gran == "Trimestral":
+                grp_tabla = grp_mes.groupby(['trimestre','periodo'], observed=True)['gbtud'].mean().reset_index()
+                grp_tabla['eje'] = grp_tabla['trimestre'].str.replace(r'(\d{4})Q(\d)', lambda m: f"{m.group(1)}-T{m.group(2)}", regex=True)
+            else:
+                grp_tabla = grp_mes.copy()
+                grp_tabla['eje'] = grp_tabla['mes_str']
+            tabla_var = grp_tabla.pivot_table(index='eje', columns='periodo', values='gbtud').reset_index()
             tabla_var.columns.name = None
-            decl_cols = sorted([c for c in tabla_var.columns if c != 'mes_str'])
+            tabla_var = tabla_var.rename(columns={'eje': 'Período'})
+            decl_cols = sorted([c for c in tabla_var.columns if c != 'Período'])
+            for col in decl_cols:
+                tabla_var[col] = pd.to_numeric(tabla_var[col], errors='coerce')
             for i in range(len(decl_cols)-1):
                 d1 = decl_cols[i]; d2 = decl_cols[i+1]
                 tabla_var[f'Var% {d1}→{d2}'] = ((tabla_var[d2]-tabla_var[d1])/tabla_var[d1].replace(0,float('nan'))*100)
             tabla_fmt = tabla_var.copy()
-            tabla_fmt = tabla_fmt.rename(columns={'mes_str':'Mes'})
             for col in decl_cols: tabla_fmt[col] = tabla_fmt[col].apply(lambda x: fmt(x,1))
             for col in tabla_fmt.columns:
                 if 'Var%' in col: tabla_fmt[col] = tabla_fmt[col].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
             st.dataframe(tabla_fmt, use_container_width=True, height=400)
 
             st.markdown("---")
-            st.subheader(f"Ranking por Operador y Campo — {dp_variable}")
+            st.subheader(f"Ranking por Operador — {dp_variable}")
             if col_var:
-                grp_rank = dfp.groupby(['razon_social','campo','periodo'], observed=True)[col_var].sum().reset_index()
+                grp_rank = dfp.groupby(['razon_social','mes','periodo'], observed=True)[col_var].sum().reset_index()
                 grp_rank['gbtud'] = grp_rank[col_var] / 1000
             else:
                 dfp['pc_total'] = dfp['pc_consumo_interno'] + dfp['pc_exportaciones'] + dfp['pc_refineria_barranca'] + dfp['pc_refineria_cartagena']
-                grp_rank = dfp.groupby(['razon_social','campo','periodo'], observed=True)['pc_total'].sum().reset_index()
+                grp_rank = dfp.groupby(['razon_social','mes','periodo'], observed=True)['pc_total'].sum().reset_index()
                 grp_rank['gbtud'] = grp_rank['pc_total'] / 1000
-            pivot_rank = grp_rank.pivot_table(index=['razon_social','campo'], columns='periodo', values='gbtud', fill_value=0).reset_index()
-            pivot_rank.columns.name = None
-            decl_cols_rank = sorted([c for c in pivot_rank.columns if c not in ['razon_social','campo']])
-            for i in range(len(decl_cols_rank)-1):
-                d1 = decl_cols_rank[i]; d2 = decl_cols_rank[i+1]
-                pivot_rank[f'Var% {d1}→{d2}'] = ((pivot_rank[d2]-pivot_rank[d1])/pivot_rank[d1].replace(0,float('nan'))*100)
-            op_totals_rank = pivot_rank.groupby('razon_social')[decl_cols_rank].sum().reset_index()
-            for i in range(len(decl_cols_rank)-1):
-                d1 = decl_cols_rank[i]; d2 = decl_cols_rank[i+1]
-                op_totals_rank[f'Var% {d1}→{d2}'] = ((op_totals_rank[d2]-op_totals_rank[d1])/op_totals_rank[d1].replace(0,float('nan'))*100)
-            ultima_decl = decl_cols_rank[-1]
-            op_totals_rank = op_totals_rank.sort_values(ultima_decl, ascending=False)
-            var_cols_rank = [c for c in pivot_rank.columns if 'Var%' in str(c)]
-            filas_rank = []
-            for _, op_row in op_totals_rank.iterrows():
-                op = op_row['razon_social']
-                fila = {'Operador / Campo': f'▶ {op}'}
-                for col in decl_cols_rank: fila[col] = fmt(op_row[col],1)
-                for col in var_cols_rank: fila[col] = fmt(op_row[col],1)+'%' if not pd.isna(op_row[col]) else 'N/D'
-                filas_rank.append(fila)
-                campos_op = pivot_rank[pivot_rank['razon_social']==op].sort_values(ultima_decl, ascending=False)
-                for _, campo_row in campos_op.iterrows():
-                    fila_c = {'Operador / Campo': f'   → {campo_row["campo"]}'}
-                    for col in decl_cols_rank: fila_c[col] = fmt(campo_row[col],1)
-                    for col in var_cols_rank: fila_c[col] = fmt(campo_row[col],1)+'%' if not pd.isna(campo_row[col]) else 'N/D'
-                    filas_rank.append(fila_c)
-            st.dataframe(pd.DataFrame(filas_rank), use_container_width=True, height=500)
+            grp_rank['anio'] = grp_rank['mes'].dt.year
+            grp_rank_anio = grp_rank.groupby(['anio','razon_social','periodo'], observed=True)['gbtud'].mean().reset_index()
+            decl_cols_r = sorted(grp_rank_anio['periodo'].astype(str).unique().tolist())
+            pivot_op = grp_rank_anio.pivot_table(index=['anio','razon_social'], columns='periodo', values='gbtud', fill_value=0).reset_index()
+            pivot_op.columns.name = None
+            pivot_op['anio'] = pivot_op['anio'].astype(int)
+            pivot_op = pivot_op.sort_values(['anio','razon_social'])
+            for i in range(len(decl_cols_r)-1):
+                d1 = decl_cols_r[i]; d2 = decl_cols_r[i+1]
+                pivot_op[f'Var% {d1}→{d2}'] = ((pivot_op[d2]-pivot_op[d1])/pivot_op[d1].replace(0,float('nan'))*100)
+            tabla_op = pivot_op.rename(columns={'razon_social':'Operador','anio':'Año'})
+            for col in decl_cols_r: tabla_op[col] = tabla_op[col].apply(lambda x: fmt(x,1))
+            for col in tabla_op.columns:
+                if 'Var%' in col: tabla_op[col] = tabla_op[col].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
+            st.dataframe(tabla_op, use_container_width=True, height=500)
+
+            st.markdown("---")
+            st.subheader(f"Ranking por Campo — {dp_variable}")
+            if col_var:
+                grp_campo = dfp.groupby(['campo','mes','periodo'], observed=True)[col_var].sum().reset_index()
+                grp_campo['gbtud'] = grp_campo[col_var] / 1000
+            else:
+                grp_campo = dfp.groupby(['campo','mes','periodo'], observed=True)['pc_total'].sum().reset_index()
+                grp_campo['gbtud'] = grp_campo['pc_total'] / 1000
+            grp_campo['anio'] = grp_campo['mes'].dt.year
+            grp_campo_anio = grp_campo.groupby(['anio','campo','periodo'], observed=True)['gbtud'].mean().reset_index()
+            decl_cols_c = sorted(grp_campo_anio['periodo'].astype(str).unique().tolist())
+            pivot_campo = grp_campo_anio.pivot_table(index=['anio','campo'], columns='periodo', values='gbtud', fill_value=0).reset_index()
+            pivot_campo.columns.name = None
+            pivot_campo['anio'] = pivot_campo['anio'].astype(int)
+            pivot_campo = pivot_campo.sort_values(['anio','campo'])
+            for i in range(len(decl_cols_c)-1):
+                d1 = decl_cols_c[i]; d2 = decl_cols_c[i+1]
+                pivot_campo[f'Var% {d1}→{d2}'] = ((pivot_campo[d2]-pivot_campo[d1])/pivot_campo[d1].replace(0,float('nan'))*100)
+            tabla_campo = pivot_campo.rename(columns={'campo':'Campo','anio':'Año'})
+            for col in decl_cols_c: tabla_campo[col] = tabla_campo[col].apply(lambda x: fmt(x,1))
+            for col in tabla_campo.columns:
+                if 'Var%' in col: tabla_campo[col] = tabla_campo[col].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
+            st.dataframe(tabla_campo, use_container_width=True, height=500)
         else:
             st.info("Selecciona al menos 2 declaratorias para ver las variaciones y el ranking.")
 
     with tab_dp2:
         st.subheader("PP, Producción Contratada y PTDV (GBTUD)")
         col1, col2, col3, col4, col5 = st.columns(5)
-        with col1: dp2_declaratoria = st.multiselect("Declaratoria", sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()), default=['2026-2035'], key="dp2_declaratoria")
+        with col1: dp2_declaratoria = st.selectbox("Declaratoria", sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()), index=sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()).index('2026-2035') if '2026-2035' in sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()) else 0, key="dp2_declaratoria")
         with col2: dp2_campo = st.multiselect("Campo", sorted(df_pot['campo'].dropna().astype(str).unique().tolist()), placeholder="Todos", key="dp2_campo")
         with col3: dp2_operador = st.multiselect("Operador", sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()), placeholder="Todos", key="dp2_operador")
         with col4:
             anios_disponibles2 = sorted(df_pot['mes'].dt.year.unique().tolist())
             dp2_anios = st.multiselect("Año", anios_disponibles2, default=[a for a in anios_disponibles2 if a >= 2026], key="dp2_anios")
         with col5: dp2_gran = st.selectbox("Ver por", ["Mensual","Trimestral","Anual"], key="dp2_gran")
-
         dfp2 = df_pot.copy()
-        if dp2_declaratoria: dfp2 = dfp2[dfp2['periodo'].astype(str).isin(dp2_declaratoria)]
+        dfp2 = dfp2[dfp2['periodo'].astype(str) == dp2_declaratoria]
         if dp2_campo: dfp2 = dfp2[dfp2['campo'].astype(str).isin(dp2_campo)]
         if dp2_operador: dfp2 = dfp2[dfp2['razon_social'].astype(str).isin(dp2_operador)]
         if dp2_anios: dfp2 = dfp2[dfp2['mes'].dt.year.isin(dp2_anios)]
-
         grp2 = dfp2.groupby('mes')[['pp','pc_consumo_interno','ptdv']].sum().reset_index()
         grp2['gbtud_pp'] = grp2['pp'] / 1000
         grp2['gbtud_pc'] = grp2['pc_consumo_interno'] / 1000
@@ -1219,371 +981,332 @@ elif seccion == "⚡ Declaración de Producción":
         grp2['mes_str'] = grp2['mes'].dt.strftime('%Y-%m')
         grp2['trimestre'] = grp2['mes'].dt.to_period('Q').astype(str)
         grp2['anio'] = grp2['mes'].dt.year
-
         if dp2_gran == "Anual":
             grp2 = grp2.groupby('anio')[['gbtud_pp','gbtud_pc','gbtud_ptdv']].mean().reset_index()
             eje_x = grp2['anio'].astype(str); x_title = 'Año'
         elif dp2_gran == "Trimestral":
             grp2 = grp2.groupby('trimestre')[['gbtud_pp','gbtud_pc','gbtud_ptdv']].mean().reset_index()
-            eje_x = grp2['trimestre']; x_title = 'Trimestre'
+            eje_x = grp2['trimestre'].str.replace(r'(\d{4})Q(\d)', lambda m: f"{m.group(1)}-T{m.group(2)}", regex=True)
+            x_title = 'Trimestre'
         else:
             eje_x = grp2['mes_str']; x_title = 'Mes'
-
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(name='Potencial de Producción (PP)', x=eje_x, y=grp2['gbtud_pp'], mode='lines', fill='tozeroy', line=dict(color='steelblue'), fillcolor='rgba(70,130,180,0.3)'))
         fig2.add_trace(go.Scatter(name='PC - Consumo Interno', x=eje_x, y=grp2['gbtud_pc'], mode='lines', fill='tozeroy', line=dict(color='green'), fillcolor='rgba(0,128,0,0.3)'))
         fig2.add_trace(go.Scatter(name='PTDV', x=eje_x, y=grp2['gbtud_ptdv'], mode='lines', fill='tozeroy', line=dict(color='red'), fillcolor='rgba(255,0,0,0.3)'))
-        fig2.update_layout(title='Potencial de Producción, Producción Contratada y PTDV (GBTUD)', xaxis_title=x_title, yaxis_title='GBTUD', height=500, legend=dict(orientation='h', y=1.08))
+        fig2.update_layout(title='Potencial de Producción, Producción Contratada y PTDV (GBTUD)',
+            xaxis_title=x_title, yaxis_title='GBTUD', height=500,
+            legend=dict(orientation='h', y=1.08), xaxis=dict(tickangle=-90))
+        st.plotly_chart(fig2, use_container_width=True)
+
+# ── Alertas y Riesgo ──────────────────────────────────────────────────────────
+elif seccion == "🚨 Alertas y Riesgo":
+    st.title("🚨 Alertas y Riesgo")
+
+    declaratorias_disp = sorted(df_pot['periodo'].dropna().astype(str).unique().tolist())
+    col1, col2, col3 = st.columns(3)
+    with col1: al_decl1 = st.selectbox("Declaratoria base", declaratorias_disp, index=len(declaratorias_disp)-2 if len(declaratorias_disp)>=2 else 0, key="al_decl1")
+    with col2: al_decl2 = st.selectbox("Declaratoria comparación", declaratorias_disp, index=len(declaratorias_disp)-1, key="al_decl2")
+    with col3: al_anios = st.multiselect("Años", sorted(df_pot['mes'].dt.year.unique().tolist()), default=[a for a in sorted(df_pot['mes'].dt.year.unique().tolist()) if a >= 2026], key="al_anios")
+
+    st.markdown("---")
+    col_u1, col_u2 = st.columns(2)
+    with col_u1: umbral_rojo = st.slider("Umbral rojo — caída mayor a (%)", min_value=-50, max_value=0, value=-10, step=1, key="umbral_rojo")
+    with col_u2: umbral_amarillo = st.slider("Umbral amarillo — caída mayor a (%)", min_value=-30, max_value=0, value=-5, step=1, key="umbral_amarillo")
+
+    df_base = df_pot[df_pot['periodo'].astype(str) == al_decl1].copy()
+    df_comp = df_pot[df_pot['periodo'].astype(str) == al_decl2].copy()
+    if al_anios:
+        df_base = df_base[df_base['mes'].dt.year.isin(al_anios)]
+        df_comp = df_comp[df_comp['mes'].dt.year.isin(al_anios)]
+
+    grp_base_c = df_base.groupby(['campo','razon_social'])[['pp','pc_consumo_interno','ptdv']].mean().reset_index()
+    grp_comp_c = df_comp.groupby(['campo','razon_social'])[['pp','pc_consumo_interno','ptdv']].mean().reset_index()
+    grp_base_o = df_base.groupby('razon_social')[['pp','pc_consumo_interno','ptdv']].mean().reset_index()
+    grp_comp_o = df_comp.groupby('razon_social')[['pp','pc_consumo_interno','ptdv']].mean().reset_index()
+
+    merged_c = grp_base_c.merge(grp_comp_c, on=['campo','razon_social'], suffixes=('_base','_comp'), how='outer')
+    for col in merged_c.select_dtypes(include='number').columns: merged_c[col] = merged_c[col].fillna(0)
+    merged_c['var_pp'] = ((merged_c['pp_comp']-merged_c['pp_base'])/merged_c['pp_base'].replace(0,float('nan'))*100)
+    merged_c['pp_base_gbtud'] = merged_c['pp_base'] / 1000
+    merged_c['pp_comp_gbtud'] = merged_c['pp_comp'] / 1000
+    merged_c['pc_comp_gbtud'] = merged_c['pc_consumo_interno_comp'] / 1000
+    merged_c['ptdv_comp_gbtud'] = merged_c['ptdv_comp'] / 1000
+
+    merged_o = grp_base_o.merge(grp_comp_o, on='razon_social', suffixes=('_base','_comp'), how='outer')
+    for col in merged_o.select_dtypes(include='number').columns: merged_o[col] = merged_o[col].fillna(0)
+    merged_o['var_pp'] = ((merged_o['pp_comp']-merged_o['pp_base'])/merged_o['pp_base'].replace(0,float('nan'))*100)
+    merged_o['pp_base_gbtud'] = merged_o['pp_base'] / 1000
+    merged_o['pp_comp_gbtud'] = merged_o['pp_comp'] / 1000
+    merged_o['pc_comp_gbtud'] = merged_o['pc_consumo_interno_comp'] / 1000
+    merged_o['ptdv_comp_gbtud'] = merged_o['ptdv_comp'] / 1000
+
+    tab_a1, tab_a2, tab_a3, tab_a4 = st.tabs(["🚦 Semáforo","📋 Top Alertas","🔍 Ficha Campo/Operador","⚠️ Riesgo Contractual"])
+
+    with tab_a1:
+        st.subheader(f"Semáforo de variaciones PP por año — {al_decl1} → {al_decl2}")
+        st.caption(f"🔴 Caída > {abs(umbral_rojo)}%  |  🟡 Caída entre {abs(umbral_amarillo)}% y {abs(umbral_rojo)}%  |  🟢 Caída < {abs(umbral_amarillo)}% o aumento")
+        for anio in sorted(al_anios):
+            st.markdown(f"### 📅 {anio}")
+            col_s1, col_s2 = st.columns(2)
+            df_anio = df_pot[(df_pot['mes'].dt.year == anio) & (df_pot['periodo'].astype(str).isin([al_decl1, al_decl2]))].copy()
+            pivot_sem_op = df_anio.groupby(['razon_social','periodo'], observed=True)['pp'].sum().reset_index()
+            pivot_sem_op['gbtud'] = pivot_sem_op['pp'] / (1000*12)
+            pivot_sem_op = pivot_sem_op.pivot_table(index='razon_social', columns='periodo', values='gbtud', fill_value=0).reset_index()
+            pivot_sem_op.columns.name = None
+            decl_sem = sorted([c for c in pivot_sem_op.columns if c != 'razon_social'])
+            for i in range(len(decl_sem)-1):
+                d1 = decl_sem[i]; d2 = decl_sem[i+1]
+                pivot_sem_op[f'Dif {d1}→{d2} (GBTUD)'] = pivot_sem_op[d2] - pivot_sem_op[d1]
+                pivot_sem_op[f'Var% {d1}→{d2}'] = ((pivot_sem_op[d2]-pivot_sem_op[d1])/pivot_sem_op[d1].replace(0,float('nan'))*100)
+            ultimo_dif_op = [c for c in pivot_sem_op.columns if 'Dif' in c]
+            if not ultimo_dif_op:
+                with col_s1: st.info("Selecciona al menos 2 declaratorias.")
+                with col_s2: st.info("Selecciona al menos 2 declaratorias.")
+                continue
+            ultimo_dif_op = ultimo_dif_op[-1]
+            pivot_sem_op = pivot_sem_op.sort_values(ultimo_dif_op, ascending=True)
+            var_cols_sem = [c for c in pivot_sem_op.columns if 'Var%' in c]
+            tabla_sem_op = pivot_sem_op.rename(columns={'razon_social':'Operador'}).copy()
+            for col in decl_sem: tabla_sem_op[col] = tabla_sem_op[col].apply(lambda x: fmt(x,1))
+            for col in var_cols_sem: tabla_sem_op[col] = tabla_sem_op[col].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
+            for col in [c for c in tabla_sem_op.columns if 'Dif' in c]: tabla_sem_op[col] = tabla_sem_op[col].apply(lambda x: fmt(x,1))
+            last_var = var_cols_sem[-1] if var_cols_sem else None
+            def color_sem_op(row):
+                if not last_var: return ['']*len(row)
+                result = ['']*len(row)
+                try:
+                    v = float(str(row[last_var]).replace('%','').replace(',','.'))
+                    color = 'background-color: #ffcccc' if v <= umbral_rojo else ('background-color: #fff3cc' if v <= umbral_amarillo else 'background-color: #ccffcc')
+                    result[list(row.index).index(last_var)] = color
+                except: pass
+                return result
+            with col_s1:
+                st.markdown("**Por Operador**")
+                st.dataframe(tabla_sem_op.style.apply(color_sem_op, axis=1), use_container_width=True, height=350)
+            pivot_sem_c = df_anio.groupby(['campo','razon_social','periodo'], observed=True)['pp'].sum().reset_index()
+            pivot_sem_c['gbtud'] = pivot_sem_c['pp'] / (1000*12)
+            pivot_sem_c = pivot_sem_c.pivot_table(index=['campo','razon_social'], columns='periodo', values='gbtud', fill_value=0).reset_index()
+            pivot_sem_c.columns.name = None
+            decl_sem_c = sorted([c for c in pivot_sem_c.columns if c not in ['campo','razon_social']])
+            for i in range(len(decl_sem_c)-1):
+                d1 = decl_sem_c[i]; d2 = decl_sem_c[i+1]
+                pivot_sem_c[f'Dif {d1}→{d2} (GBTUD)'] = pivot_sem_c[d2] - pivot_sem_c[d1]
+                pivot_sem_c[f'Var% {d1}→{d2}'] = ((pivot_sem_c[d2]-pivot_sem_c[d1])/pivot_sem_c[d1].replace(0,float('nan'))*100)
+            ultimo_dif_c = [c for c in pivot_sem_c.columns if 'Dif' in c][-1]
+            pivot_sem_c = pivot_sem_c.sort_values(ultimo_dif_c, ascending=True)
+            var_cols_sem_c = [c for c in pivot_sem_c.columns if 'Var%' in c]
+            tabla_sem_c = pivot_sem_c.rename(columns={'campo':'Campo','razon_social':'Operador'}).copy()
+            for col in decl_sem_c: tabla_sem_c[col] = tabla_sem_c[col].apply(lambda x: fmt(x,1))
+            for col in var_cols_sem_c: tabla_sem_c[col] = tabla_sem_c[col].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
+            for col in [c for c in tabla_sem_c.columns if 'Dif' in c]: tabla_sem_c[col] = tabla_sem_c[col].apply(lambda x: fmt(x,1))
+            last_var_c = var_cols_sem_c[-1] if var_cols_sem_c else None
+            def color_sem_c(row):
+                if not last_var_c: return ['']*len(row)
+                result = ['']*len(row)
+                try:
+                    v = float(str(row[last_var_c]).replace('%','').replace(',','.'))
+                    color = 'background-color: #ffcccc' if v <= umbral_rojo else ('background-color: #fff3cc' if v <= umbral_amarillo else 'background-color: #ccffcc')
+                    result[list(row.index).index(last_var_c)] = color
+                except: pass
+                return result
+            with col_s2:
+                st.markdown("**Por Campo**")
+                st.dataframe(tabla_sem_c.style.apply(color_sem_c, axis=1), use_container_width=True, height=350)
+            st.markdown("---")
+
+    with tab_a2:
+        st.subheader(f"Top alertas — Mayores caídas de PP entre {al_decl1} y {al_decl2}")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("**Top operadores con mayor caída**")
+            top_op = merged_o[merged_o['var_pp'] < 0].sort_values('var_pp').head(10)
+            top_op_fmt = top_op[['razon_social','pp_base_gbtud','pp_comp_gbtud','var_pp','pc_comp_gbtud']].copy()
+            top_op_fmt.columns = ['Operador','PP Base (GBTUD)','PP Comp (GBTUD)','Var% PP','PC (GBTUD)']
+            top_op_fmt['PP Base (GBTUD)'] = top_op_fmt['PP Base (GBTUD)'].apply(lambda x: fmt(x,1))
+            top_op_fmt['PP Comp (GBTUD)'] = top_op_fmt['PP Comp (GBTUD)'].apply(lambda x: fmt(x,1))
+            top_op_fmt['Var% PP'] = top_op_fmt['Var% PP'].apply(lambda x: fmt(x,1)+'%')
+            top_op_fmt['PC (GBTUD)'] = top_op_fmt['PC (GBTUD)'].apply(lambda x: fmt(x,1))
+            st.dataframe(top_op_fmt, use_container_width=True, height=400)
+        with col_t2:
+            st.markdown("**Top campos con mayor caída**")
+            top_c = merged_c[merged_c['var_pp'] < 0].sort_values('var_pp').head(10)
+            top_c_fmt = top_c[['campo','razon_social','pp_base_gbtud','pp_comp_gbtud','var_pp','pc_comp_gbtud']].copy()
+            top_c_fmt.columns = ['Campo','Operador','PP Base (GBTUD)','PP Comp (GBTUD)','Var% PP','PC (GBTUD)']
+            top_c_fmt['PP Base (GBTUD)'] = top_c_fmt['PP Base (GBTUD)'].apply(lambda x: fmt(x,1))
+            top_c_fmt['PP Comp (GBTUD)'] = top_c_fmt['PP Comp (GBTUD)'].apply(lambda x: fmt(x,1))
+            top_c_fmt['Var% PP'] = top_c_fmt['Var% PP'].apply(lambda x: fmt(x,1)+'%')
+            top_c_fmt['PC (GBTUD)'] = top_c_fmt['PC (GBTUD)'].apply(lambda x: fmt(x,1))
+            st.dataframe(top_c_fmt, use_container_width=True, height=400)
+        st.markdown("---")
+        st.markdown("**Campos que desaparecen entre declaratorias**")
+        campos_base = set(df_base['campo'].astype(str).unique())
+        campos_comp = set(df_comp['campo'].astype(str).unique())
+        desaparecen = campos_base - campos_comp
+        aparecen = campos_comp - campos_base
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.warning(f"**{len(desaparecen)} campos que salen** entre {al_decl1} y {al_decl2}")
+            if desaparecen: st.dataframe(pd.DataFrame(sorted(desaparecen), columns=['Campo']), use_container_width=True)
+        with col_d2:
+            st.success(f"**{len(aparecen)} campos nuevos** entre {al_decl1} y {al_decl2}")
+            if aparecen: st.dataframe(pd.DataFrame(sorted(aparecen), columns=['Campo']), use_container_width=True)
+
+    with tab_a3:
+        st.subheader("Ficha de Campo / Operador")
+        col_f1, col_f2 = st.columns(2)
+        with col_f1: nivel_ficha = st.radio("Ver por", ["Campo","Operador"], horizontal=True, key="nivel_ficha")
+        with col_f2:
+            if nivel_ficha == "Campo":
+                entidad = st.selectbox("Campo", sorted(df_pot['campo'].dropna().astype(str).unique().tolist()), key="ficha_campo")
+                df_ficha = df_pot[df_pot['campo'].astype(str) == entidad]
+                grp_ficha = df_ficha.groupby(['mes','periodo'], observed=True)[['pp','pc_consumo_interno','ptdv']].sum().reset_index()
+            else:
+                entidad = st.selectbox("Operador", sorted(df_pot['razon_social'].dropna().astype(str).unique().tolist()), key="ficha_op")
+                df_ficha = df_pot[df_pot['razon_social'].astype(str) == entidad]
+                grp_ficha = df_ficha.groupby(['mes','periodo'], observed=True)[['pp','pc_consumo_interno','ptdv']].sum().reset_index()
+        grp_ficha['gbtud_pp'] = grp_ficha['pp'] / 1000
+        grp_ficha['gbtud_pc'] = grp_ficha['pc_consumo_interno'] / 1000
+        grp_ficha['gbtud_ptdv'] = grp_ficha['ptdv'] / 1000
+        grp_ficha['mes_str'] = grp_ficha['mes'].dt.strftime('%Y-%m')
+        fig_ficha = go.Figure()
+        for per in sorted(grp_ficha['periodo'].astype(str).unique()):
+            data_per = grp_ficha[grp_ficha['periodo'].astype(str)==per]
+            fig_ficha.add_trace(go.Scatter(name=f'PP {per}', x=data_per['mes_str'], y=data_per['gbtud_pp'], mode='lines+markers'))
+        ultima_decl_ficha = sorted(grp_ficha['periodo'].astype(str).unique())[-1]
+        data_ultima = grp_ficha[grp_ficha['periodo'].astype(str)==ultima_decl_ficha]
+        fig_ficha.add_trace(go.Scatter(name='PC (última decl.)', x=data_ultima['mes_str'], y=data_ultima['gbtud_pc'], mode='lines', line=dict(color='green', dash='dash', width=2)))
+        fig_ficha.add_trace(go.Scatter(name='PTDV (última decl.)', x=data_ultima['mes_str'], y=data_ultima['gbtud_ptdv'], mode='lines', line=dict(color='red', dash='dash', width=2)))
+        fig_ficha.update_layout(title=f'Evolución PP a través de declaratorias — {entidad}',
+            xaxis_title='Mes', yaxis_title='GBTUD', height=450,
+            legend=dict(orientation='v', x=1.02), xaxis=dict(tickangle=-90))
+        st.plotly_chart(fig_ficha, use_container_width=True)
+
+    with tab_a4:
+        st.subheader("Riesgo Contractual — PP vs PC")
+        st.caption("🔴 PP < PC (riesgo de incumplimiento)  |  🟡 PP entre 1x y 1,2x PC (margen estrecho)  |  🟢 PP > 1,2x PC (margen suficiente)")
+        col_r0, col_r1 = st.columns(2)
+        with col_r0: rc_declaratoria = st.selectbox("Declaratoria", sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()), index=sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()).index('2026-2035') if '2026-2035' in sorted(df_pot['periodo'].dropna().astype(str).unique().tolist()) else 0, key="rc_declaratoria")
+        with col_r1: umbral_margen = st.slider("Umbral margen suficiente (PP/PC)", min_value=1.0, max_value=2.0, value=1.2, step=0.05, key="umbral_margen")
+        df_rc = df_pot[df_pot['periodo'].astype(str) == rc_declaratoria].copy()
+        df_rc['anio'] = df_rc['mes'].dt.year
+        if al_anios: df_rc = df_rc[df_rc['anio'].isin(al_anios)]
+        grp_rc_op = df_rc.groupby(['anio','razon_social'], observed=True)[['pp','pc_consumo_interno','ptdv']].sum().reset_index()
+        grp_rc_op['PP (GBTUD)'] = grp_rc_op['pp'] / 1000
+        grp_rc_op['PC (GBTUD)'] = grp_rc_op['pc_consumo_interno'] / 1000
+        grp_rc_op['PTDV (GBTUD)'] = grp_rc_op['ptdv'] / 1000
+        grp_rc_op['PP/PC'] = grp_rc_op['PP (GBTUD)'] / grp_rc_op['PC (GBTUD)'].replace(0, float('nan'))
+        grp_rc_op = grp_rc_op[grp_rc_op['PC (GBTUD)'] > 0].sort_values(['anio','PP/PC'])
+        grp_rc_c = df_rc.groupby(['anio','campo','razon_social'], observed=True)[['pp','pc_consumo_interno','ptdv']].sum().reset_index()
+        grp_rc_c['PP (GBTUD)'] = grp_rc_c['pp'] / 1000
+        grp_rc_c['PC (GBTUD)'] = grp_rc_c['pc_consumo_interno'] / 1000
+        grp_rc_c['PTDV (GBTUD)'] = grp_rc_c['ptdv'] / 1000
+        grp_rc_c['PP/PC'] = grp_rc_c['PP (GBTUD)'] / grp_rc_c['PC (GBTUD)'].replace(0, float('nan'))
+        grp_rc_c = grp_rc_c[grp_rc_c['PC (GBTUD)'] > 0].sort_values(['anio','PP/PC'])
+        def color_riesgo(row, umbral):
+            try:
+                v = float(str(row['PP/PC']).replace(',','.'))
+                color = 'background-color: #ffcccc' if v < 1.0 else ('background-color: #fff3cc' if v < umbral else 'background-color: #ccffcc')
+            except: color = ''
+            result = ['']*len(row)
+            result[list(row.index).index('PP/PC')] = color
+            return result
+        for anio in sorted(df_rc['anio'].unique()):
+            st.markdown(f"### 📅 {anio}")
+            col_rc1, col_rc2 = st.columns(2)
+            df_op_anio = grp_rc_op[grp_rc_op['anio'] == anio][['razon_social','PP (GBTUD)','PC (GBTUD)','PTDV (GBTUD)','PP/PC']].copy()
+            df_op_anio = df_op_anio.rename(columns={'razon_social':'Operador'})
+            df_op_anio['PP (GBTUD)'] = df_op_anio['PP (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_op_anio['PC (GBTUD)'] = df_op_anio['PC (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_op_anio['PTDV (GBTUD)'] = df_op_anio['PTDV (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_op_anio['PP/PC'] = df_op_anio['PP/PC'].apply(lambda x: fmt(x,2) if not pd.isna(x) else 'N/D')
+            df_c_anio = grp_rc_c[grp_rc_c['anio'] == anio][['campo','razon_social','PP (GBTUD)','PC (GBTUD)','PTDV (GBTUD)','PP/PC']].copy()
+            df_c_anio = df_c_anio.rename(columns={'campo':'Campo','razon_social':'Operador'})
+            df_c_anio['PP (GBTUD)'] = df_c_anio['PP (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_c_anio['PC (GBTUD)'] = df_c_anio['PC (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_c_anio['PTDV (GBTUD)'] = df_c_anio['PTDV (GBTUD)'].apply(lambda x: fmt(x,1))
+            df_c_anio['PP/PC'] = df_c_anio['PP/PC'].apply(lambda x: fmt(x,2) if not pd.isna(x) else 'N/D')
+            with col_rc1:
+                st.markdown("**Por Operador**")
+                st.dataframe(df_op_anio.style.apply(lambda row: color_riesgo(row, umbral_margen), axis=1), use_container_width=True, height=300)
+            with col_rc2:
+                st.markdown("**Por Campo**")
+                st.dataframe(df_c_anio.style.apply(lambda row: color_riesgo(row, umbral_margen), axis=1), use_container_width=True, height=300)
+            st.markdown("---")
 
 # ── Nominaciones ──────────────────────────────────────────────────────────────
 elif seccion == "📋 Nominaciones":
     st.title("📋 Nominaciones — Programación Definitiva de Suministro")
-    tab_n1, tab_n2, tab_n3 = st.tabs(["📊 Resumen", "⚖️ Vs Contratación", "🔎 Cruce por Operación"])
+    tab_n1, tab_n2, tab_n3 = st.tabs(["📊 Resumen","🏭 Por Vendedor","🏢 Por Comprador"])
 
-    # ── Tab 1: Resumen ────────────────────────────────────────────────────────
     with tab_n1:
         st.subheader("Resumen de Nominaciones")
         n1_vendedor, n1_comprador, n1_sector, n1_tipo, n1_destino = construir_filtros_nominaciones(df_nom, "n1")
         col_fi, col_ff, col_gran = st.columns(3)
-        with col_fi:
-            n1_inicio = st.date_input("Fecha inicio",
-                value=(pd.Timestamp.today() - pd.Timedelta(days=30)).date(),
-                min_value=df_nom['fecha_gas'].min().date(),
-                max_value=df_nom['fecha_gas'].max().date(),
-                key="n1_fi")
-        with col_ff:
-            n1_fin = st.date_input("Fecha fin",
-                value=df_nom['fecha_gas'].max().date(),
-                min_value=df_nom['fecha_gas'].min().date(),
-                max_value=df_nom['fecha_gas'].max().date(),
-                key="n1_ff")
-        with col_gran:
-            n1_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="n1_gran")
-
+        with col_fi: n1_inicio = st.date_input("Fecha inicio", value=pd.Timestamp('2025-01-01').date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n1_fi")
+        with col_ff: n1_fin = st.date_input("Fecha fin", value=df_nom['fecha_gas'].max().date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n1_ff")
+        with col_gran: n1_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="n1_gran")
         dfn1 = df_nom.copy()
         dfn1 = dfn1[(dfn1['fecha_gas'].dt.date >= n1_inicio) & (dfn1['fecha_gas'].dt.date <= n1_fin)]
         dfn1 = aplicar_filtros_nominaciones(dfn1, n1_vendedor, n1_comprador, n1_sector, n1_tipo, n1_destino)
-
         if dfn1.empty:
             st.warning("No hay datos para los filtros seleccionados.")
         else:
-            n_dias_n1 = (n1_fin - n1_inicio).days + 1
-
             gbtud_prom = dfn1.groupby('fecha_gas')['cantidad_mbtud'].sum().mean() / 1000
-            n_vendedores = dfn1['nombre_vendedor'].nunique()
-            n_compradores = dfn1['nombre_comprador'].nunique()
-            n_dias = dfn1['fecha_gas'].nunique()
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("GBTUD promedio/día", fmt(gbtud_prom, 1))
-            k2.metric("N° Vendedores", fmt(n_vendedores, 0))
-            k3.metric("N° Compradores", fmt(n_compradores, 0))
-            k4.metric("Días con nominación", fmt(n_dias, 0))
-
+            k2.metric("N° Vendedores", fmt(dfn1['nombre_vendedor'].nunique(), 0))
+            k3.metric("N° Compradores", fmt(dfn1['nombre_comprador'].nunique(), 0))
+            k4.metric("Días con nominación", fmt(dfn1['fecha_gas'].nunique(), 0))
             grp_n1 = agrupar_nominaciones_sector(dfn1, n1_gran)
-            st.plotly_chart(
-                construir_grafico_nom_sector(grp_n1, 'Nominación (GBTUD/día) por Sector de Consumo'),
-                use_container_width=True
-            )
-
-            dfn1_gbtud = dfn1.copy()
-            dfn1_gbtud['gbtud'] = dfn1_gbtud['cantidad_mbtud'] / 1000
-
+            st.plotly_chart(construir_grafico_nom_sector(grp_n1, 'Nominación (GBTUD/día) por Sector de Consumo'), use_container_width=True)
             st.markdown("---")
             col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                st.plotly_chart(
-                    pie_chart(dfn1_gbtud, 'sector_consumo', 'Distribución por Sector de Consumo', 'gbtud'),
-                    use_container_width=True
-                )
-            with col_p2:
-                st.plotly_chart(
-                    pie_chart(dfn1_gbtud, 'destino', 'Distribución por Destino', 'gbtud'),
-                    use_container_width=True
-                )
+            dfn1_gbtud = dfn1.copy()
+            dfn1_gbtud['gbtud'] = dfn1_gbtud['cantidad_mbtud'] / 1000
+            with col_p1: st.plotly_chart(pie_chart(dfn1_gbtud, 'sector_consumo', 'Distribución por Sector de Consumo', 'gbtud'), use_container_width=True)
+            with col_p2: st.plotly_chart(pie_chart(dfn1_gbtud, 'destino', 'Distribución por Destino', 'gbtud'), use_container_width=True)
 
-            st.markdown("---")
-            st.subheader("Ranking de Vendedores")
-            col_v1, col_v2 = st.columns(2)
-            with col_v1:
-                st.plotly_chart(
-                    bar_chart_top_gbtud(dfn1, 'nombre_vendedor', 'Top 10 Vendedores por GBTUD/día', n_dias_n1),
-                    use_container_width=True
-                )
-            with col_v2:
-                st.plotly_chart(
-                    pie_chart(dfn1_gbtud, 'nombre_vendedor', 'Participación por Vendedor', 'gbtud'),
-                    use_container_width=True
-                )
-
-            st.markdown("---")
-            st.subheader("Ranking de Compradores")
-            col_c1, col_c2 = st.columns(2)
-            with col_c1:
-                st.plotly_chart(
-                    bar_chart_top_gbtud(dfn1, 'nombre_comprador', 'Top 10 Compradores por GBTUD/día', n_dias_n1),
-                    use_container_width=True
-                )
-            with col_c2:
-                st.plotly_chart(
-                    pie_chart(dfn1_gbtud, 'nombre_comprador', 'Participación por Comprador', 'gbtud'),
-                    use_container_width=True
-                )
-            st.markdown("---")
-            st.subheader("Detalle de Nominación (MBTUD)")
-            col_agr1, col_agr2 = st.columns(2)
-            with col_agr1:
-                n1_agrupar_por = st.radio("Agrupar por", ["Comprador","Vendedor"], key="n1_agrupar_por", horizontal=True)
-            with col_agr2:
-                n1_detalle_por = st.radio("Desglosar por", ["Tipo demanda","Sector consumo"], key="n1_detalle_por", horizontal=True)
-
-            col_tabla = 'nombre_comprador' if n1_agrupar_por == "Comprador" else 'nombre_vendedor'
-            col_detalle_tabla = 'tipo_demanda' if n1_detalle_por == "Tipo demanda" else 'sector_consumo'
-
-            if n_dias_n1 > 31:
-                st.info("El rango seleccionado supera 31 días — la tabla tendrá muchas columnas. Considera acortar el rango de fechas para una vista más legible.")
-
-            tabla_nom_detalle = construir_tabla_nominacion_detalle(dfn1, col_tabla, col_detalle_tabla)
-            if tabla_nom_detalle.empty:
-                st.warning("No hay datos para construir la tabla con los filtros seleccionados.")
-            else:
-                def resaltar_totales(row):
-                    es_total = row['Agente / Detalle'].startswith('▶')
-                    estilo = 'background-color: #e8eef7; color: #1a1a2e' if es_total else ''
-                    return [estilo for _ in row]
-
-                tabla_estilizada = tabla_nom_detalle.style.apply(resaltar_totales, axis=1)
-                st.dataframe(tabla_estilizada, use_container_width=True, height=500)
-                        # ── Tab 2: Vs Contratación ────────────────────────────────────────────────
     with tab_n2:
-        st.subheader("Contratación vs Nominación por Empresa")
-        col1, col2 = st.columns(2)
-        with col1:
-            cvn_rol = st.radio("Rol de la empresa", ["Vendedor","Comprador"], key="cvn_rol", horizontal=True)
-        col_empresa = 'nombre_vendedor' if cvn_rol == "Vendedor" else 'nombre_comprador'
-        with col2:
-            empresas_disponibles = sorted(df_nom[col_empresa].dropna().astype(str).unique().tolist())
-            cvn_empresas = st.multiselect("Empresa(s)", empresas_disponibles, placeholder="Selecciona una o varias", key="cvn_empresas")
-
-        col3, col4, col5 = st.columns(3)
-        with col3:
-            sectores_disp = sorted(set(df['sector_consumo'].dropna().astype(str).unique()) | set(df_nom['sector_consumo'].dropna().astype(str).unique()))
-            cvn_sector = st.multiselect("Sector consumo", sectores_disp, placeholder="Todos", key="cvn_sector")
-        with col4:
-            tipos_disp = sorted(set(df['tipo_demanda'].dropna().astype(str).unique()) | set(df_nom['tipo_demanda'].dropna().astype(str).unique()))
-            cvn_tipo = st.multiselect("Tipo demanda", tipos_disp, placeholder="Todas", key="cvn_tipo")
-        with col5:
-            cvn_modalidad = st.multiselect("Modalidad (contratos)", sorted(df['modalidad'].dropna().astype(str).unique().tolist()), placeholder="Todas", key="cvn_modalidad")
-
-        col6, col7, col8 = st.columns(3)
-        fecha_min_cvn = max(df['fecha_dia'].min().date(), df_nom['fecha_gas'].min().date())
-        fecha_max_cvn = min(df['fecha_dia'].max().date(), df_nom['fecha_gas'].max().date())
-        with col6:
-            cvn_inicio = st.date_input("Fecha inicio", value=pd.Timestamp('2025-01-01').date(),
-                min_value=fecha_min_cvn, max_value=fecha_max_cvn, key="cvn_fi")
-        with col7:
-            cvn_fin = st.date_input("Fecha fin", value=fecha_max_cvn,
-                min_value=fecha_min_cvn, max_value=fecha_max_cvn, key="cvn_ff")
-        with col8:
-            cvn_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="cvn_gran")
-
-        if not cvn_empresas:
-            st.info("Selecciona al menos una empresa para ver la comparación.")
-        else:
-            dff_cont_e = df[(df[col_empresa].isin(cvn_empresas)) &
-                            (df['fecha_dia'].dt.date >= cvn_inicio) & (df['fecha_dia'].dt.date <= cvn_fin)]
-            dff_nom_e = df_nom[(df_nom[col_empresa].isin(cvn_empresas)) &
-                               (df_nom['fecha_gas'].dt.date >= cvn_inicio) & (df_nom['fecha_gas'].dt.date <= cvn_fin)]
-
-            if cvn_sector:
-                dff_cont_e = dff_cont_e[dff_cont_e['sector_consumo'].isin(cvn_sector)]
-                dff_nom_e = dff_nom_e[dff_nom_e['sector_consumo'].isin(cvn_sector)]
-            if cvn_tipo:
-                dff_cont_e = dff_cont_e[dff_cont_e['tipo_demanda'].isin(cvn_tipo)]
-                dff_nom_e = dff_nom_e[dff_nom_e['tipo_demanda'].isin(cvn_tipo)]
-            if cvn_modalidad:
-                dff_cont_e = dff_cont_e[dff_cont_e['modalidad'].isin(cvn_modalidad)]
-                # La modalidad es un atributo del contrato; no existe en nominaciones, por lo que no se filtra df_nom por ella.
-
-            if dff_cont_e.empty and dff_nom_e.empty:
-                st.warning("No hay datos de contratación ni nominación para los filtros seleccionados.")
-            else:
-                grp_cont_e = agrupar_contratos_total(dff_cont_e, cvn_gran) if not dff_cont_e.empty else pd.DataFrame(columns=['periodo_str','gbtud_cont'])
-                grp_nom_e = agrupar_nominaciones_total(dff_nom_e, cvn_gran) if not dff_nom_e.empty else pd.DataFrame(columns=['periodo_str','gbtud_nom'])
-                comp = grp_cont_e.merge(grp_nom_e, on='periodo_str', how='outer').fillna(0)
-                comp = comp.sort_values('periodo_str')
-                comp['diferencia'] = comp['gbtud_cont'] - comp['gbtud_nom']
-                comp['pct_cumplimiento'] = comp['gbtud_nom'] / comp['gbtud_cont'].replace(0, float('nan')) * 100
-
-                titulo_emp = ', '.join(cvn_empresas) if len(cvn_empresas) <= 3 else f'{len(cvn_empresas)} empresas seleccionadas'
-
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Promedio Contratado (GBTUD)", fmt(comp['gbtud_cont'].mean(),1))
-                k2.metric("Promedio Nominado (GBTUD)", fmt(comp['gbtud_nom'].mean(),1))
-                k3.metric("Diferencia promedio (GBTUD)", fmt(comp['diferencia'].mean(),1))
-                pct_prom = comp['pct_cumplimiento'].mean()
-                k4.metric("% Cumplimiento promedio", fmt(pct_prom,1)+'%' if not pd.isna(pct_prom) else 'N/D')
-
-                fig_cvn = go.Figure()
-                fig_cvn.add_trace(go.Bar(name='Contratado', x=comp['periodo_str'], y=comp['gbtud_cont'], marker_color='steelblue',
-                    text=comp['gbtud_cont'].apply(lambda x: fmt(x,1)), textposition='outside', textangle=-90, textfont=dict(size=14)))
-                fig_cvn.add_trace(go.Bar(name='Nominado', x=comp['periodo_str'], y=comp['gbtud_nom'], marker_color='darkorange',
-                    text=comp['gbtud_nom'].apply(lambda x: fmt(x,1)), textposition='outside', textangle=-90, textfont=dict(size=14)))
-                fig_cvn.update_layout(barmode='group', title=f'Contratación vs Nominación — {titulo_emp} ({cvn_rol})',
-                    xaxis_title='Período', yaxis_title='GBTUD', height=450, legend=dict(orientation='v', x=1.02))
-                st.plotly_chart(fig_cvn, use_container_width=True)
-
-                fig_pct = go.Figure()
-                fig_pct.add_trace(go.Scatter(name='% Cumplimiento (Nom/Cont)', x=comp['periodo_str'], y=comp['pct_cumplimiento'],
-                    mode='lines+markers', line=dict(color='red', width=2)))
-                fig_pct.add_hline(y=100, line_dash='dash', line_color='gray', line_width=1)
-                fig_pct.update_layout(title='% Cumplimiento de Nominación sobre lo Contratado', xaxis_title='Período', yaxis_title='%', height=350)
-                st.plotly_chart(fig_pct, use_container_width=True)
-
-                st.subheader("Detalle por período")
-                tabla_cvn = comp.copy()
-                tabla_cvn['gbtud_cont'] = tabla_cvn['gbtud_cont'].apply(lambda x: fmt(x,1))
-                tabla_cvn['gbtud_nom'] = tabla_cvn['gbtud_nom'].apply(lambda x: fmt(x,1))
-                tabla_cvn['diferencia'] = tabla_cvn['diferencia'].apply(lambda x: fmt(x,1))
-                tabla_cvn['pct_cumplimiento'] = tabla_cvn['pct_cumplimiento'].apply(lambda x: fmt(x,1)+'%' if not pd.isna(x) else 'N/D')
-                tabla_cvn = tabla_cvn[['periodo_str','gbtud_cont','gbtud_nom','diferencia','pct_cumplimiento']]
-                tabla_cvn.columns = ['Período','Contratado (GBTUD)','Nominado (GBTUD)','Diferencia (GBTUD)','% Cumplimiento']
-                st.dataframe(tabla_cvn, use_container_width=True)
-    # ── Tab 3: Cruce por Operación ───────────────────────────────────────────
-    with tab_n3:
-        st.subheader("Cruce Contratación vs Nominación por N° de Operación SEGAS")
-
-        st.info(
-            "**Nota normativa (Resolución CREG 102 015 de 2025):** el Artículo 26, Parágrafo 4 establece que, "
-            "con excepción de los contratos **Con Interrupciones**, las obligaciones de las demás modalidades "
-            "(Firme, Firmeza Condicionada, Opción de Compra, Contingencia) se consideran **permanentes y por el "
-            "100% del gas contratado** durante toda su vigencia — es decir, no requieren un acto de nominación "
-            "diaria para activarse. El Artículo 38, por su parte, condiciona la firmeza diaria de los contratos "
-            "**Con Interrupciones** a que ocurra la nominación. Por eso, un contrato Firme sin nominación "
-            "cruzada **no es necesariamente un incumplimiento** — puede ser el comportamiento esperado por diseño "
-            "regulatorio. Se recomienda interpretar el cruce con esto en mente, especialmente al excluir o no la "
-            "modalidad Firme del análisis."
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            cop_rol = st.radio("Filtrar empresa por rol", ["Todas","Vendedor","Comprador"], key="cop_rol", horizontal=True)
-        col_empresa_op = 'nombre_vendedor' if cop_rol == "Vendedor" else ('nombre_comprador' if cop_rol == "Comprador" else None)
-        with col2:
-            if col_empresa_op:
-                empresas_op_disp = sorted(set(df[col_empresa_op].dropna().astype(str).unique()) | set(df_nom[col_empresa_op].dropna().astype(str).unique()))
-                cop_empresas = st.multiselect("Empresa(s)", empresas_op_disp, placeholder="Todas", key="cop_empresas")
-            else:
-                cop_empresas = []
-
-        col3, col4, col5 = st.columns(3)
-        with col3:
-            cop_sector = st.multiselect("Sector consumo", sorted(set(df['sector_consumo'].dropna().astype(str).unique()) | set(df_nom['sector_consumo'].dropna().astype(str).unique())), placeholder="Todos", key="cop_sector")
-        with col4:
-            cop_tipo = st.multiselect("Tipo demanda", sorted(set(df['tipo_demanda'].dropna().astype(str).unique()) | set(df_nom['tipo_demanda'].dropna().astype(str).unique())), placeholder="Todas", key="cop_tipo")
-        with col5:
-            cop_mercado = st.multiselect("Mercado (contratos)", sorted(df['mercado'].dropna().astype(str).unique().tolist()), placeholder="Todos", key="cop_mercado")
-
-        col6, col7 = st.columns(2)
-        with col6:
-            cop_modalidad = st.multiselect("Modalidad (contratos)", sorted(df['modalidad'].dropna().astype(str).unique().tolist()), placeholder="Todas", key="cop_modalidad")
-        with col7:
-            cop_excluir_firme = st.checkbox("Excluir modalidad 'Firme' (permanente por regulación, ver nota arriba)", value=False, key="cop_excluir_firme")
-
-        col8, col9, col10 = st.columns(3)
-        fecha_min_cop = max(df['fecha_dia'].min().date(), df_nom['fecha_gas'].min().date())
-        fecha_max_cop = min(df['fecha_dia'].max().date(), df_nom['fecha_gas'].max().date())
-        with col8:
-            cop_inicio = st.date_input("Fecha inicio", value=pd.Timestamp('2025-01-01').date(),
-                min_value=fecha_min_cop, max_value=fecha_max_cop, key="cop_fi")
-        with col9:
-            cop_fin = st.date_input("Fecha fin", value=fecha_max_cop,
-                min_value=fecha_min_cop, max_value=fecha_max_cop, key="cop_ff")
-        with col10:
-            cop_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="cop_gran")
-
-        dff_cont_op = df[(df['fecha_dia'].dt.date >= cop_inicio) & (df['fecha_dia'].dt.date <= cop_fin)]
-        dff_nom_op = df_nom[(df_nom['fecha_gas'].dt.date >= cop_inicio) & (df_nom['fecha_gas'].dt.date <= cop_fin)]
-
-        if col_empresa_op and cop_empresas:
-            dff_cont_op = dff_cont_op[dff_cont_op[col_empresa_op].isin(cop_empresas)]
-            dff_nom_op = dff_nom_op[dff_nom_op[col_empresa_op].isin(cop_empresas)]
-        if cop_sector:
-            dff_cont_op = dff_cont_op[dff_cont_op['sector_consumo'].isin(cop_sector)]
-            dff_nom_op = dff_nom_op[dff_nom_op['sector_consumo'].isin(cop_sector)]
-        if cop_tipo:
-            dff_cont_op = dff_cont_op[dff_cont_op['tipo_demanda'].isin(cop_tipo)]
-            dff_nom_op = dff_nom_op[dff_nom_op['tipo_demanda'].isin(cop_tipo)]
-        if cop_mercado:
-            dff_cont_op = dff_cont_op[dff_cont_op['mercado'].isin(cop_mercado)]
-            # Mercado no existe en nominaciones; el filtro solo restringe el universo de operaciones contratadas a cruzar.
-        if cop_modalidad:
-            dff_cont_op = dff_cont_op[dff_cont_op['modalidad'].isin(cop_modalidad)]
-        if cop_excluir_firme:
-            dff_cont_op = dff_cont_op[dff_cont_op['modalidad'] != 'Firme']
-
-        n_dias_cop = (cop_fin - cop_inicio).days + 1
-
-        if dff_cont_op.empty and dff_nom_op.empty:
+        st.subheader("Nominación por Vendedor")
+        n2_vendedor, n2_comprador, n2_sector, n2_tipo, n2_destino = construir_filtros_nominaciones(df_nom, "n2")
+        col_fi2, col_ff2, col_gran2 = st.columns(3)
+        with col_fi2: n2_inicio = st.date_input("Fecha inicio", value=pd.Timestamp('2025-01-01').date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n2_fi")
+        with col_ff2: n2_fin = st.date_input("Fecha fin", value=df_nom['fecha_gas'].max().date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n2_ff")
+        with col_gran2: n2_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="n2_gran")
+        dfn2 = df_nom.copy()
+        dfn2 = dfn2[(dfn2['fecha_gas'].dt.date >= n2_inicio) & (dfn2['fecha_gas'].dt.date <= n2_fin)]
+        dfn2 = aplicar_filtros_nominaciones(dfn2, n2_vendedor, n2_comprador, n2_sector, n2_tipo, n2_destino)
+        if dfn2.empty:
             st.warning("No hay datos para los filtros seleccionados.")
         else:
-            comp, cobertura = cruzar_matched_periodo(dff_cont_op, dff_nom_op, cop_gran)
+            grp_n2 = agrupar_nominaciones(dfn2, n2_gran, 'nombre_vendedor')
+            st.plotly_chart(construir_grafico_nom_agente(grp_n2, 'nombre_vendedor', 'Nominación (GBTUD/día) por Vendedor — Top 15'), use_container_width=True)
+            st.markdown("---")
+            dfn2_gbtud = dfn2.copy()
+            dfn2_gbtud['gbtud'] = dfn2_gbtud['cantidad_mbtud'] / 1000
+            col_v1, col_v2 = st.columns(2)
+            with col_v1: st.plotly_chart(bar_chart_top(dfn2_gbtud, 'nombre_vendedor', 'Top 10 Vendedores por GBTUD nominado', 'gbtud'), use_container_width=True)
+            with col_v2: st.plotly_chart(pie_chart(dfn2_gbtud, 'nombre_vendedor', 'Participación por Vendedor', 'gbtud'), use_container_width=True)
 
-            st.markdown("#### Diagnóstico de cobertura")
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("N° Operaciones contratadas", fmt(cobertura['n_ops_cont'],0))
-            k2.metric("N° Operaciones nominadas", fmt(cobertura['n_ops_nom'],0))
-            k3.metric("N° Operaciones que cruzan", fmt(cobertura['n_cruzan'],0))
-            pct_cob = cobertura['n_cruzan']/cobertura['n_ops_nom']*100 if cobertura['n_ops_nom']>0 else 0
-            k4.metric("% Cobertura (sobre nominadas)", fmt(pct_cob,1)+'%')
-
-            k5, k6 = st.columns(2)
-            k5.metric("Operaciones solo nominadas (sin contrato)", fmt(cobertura['n_huerfanas_nom'],0))
-            k6.metric("Operaciones solo contratadas (sin nominar)", fmt(cobertura['n_huerfanas_cont'],0))
-
-            if comp.empty or (comp['gbtud_cont'].sum()==0 and comp['gbtud_nom'].sum()==0):
-                st.warning("No hay operaciones que crucen (Contratado ∩ Nominado) para graficar con estos filtros.")
-            else:
-                st.markdown("---")
-                st.markdown("#### Contratado vs Nominado — solo operaciones que cruzan")
-                titulo_emp = ', '.join(cop_empresas) if (cop_empresas and len(cop_empresas) <= 3) else (f'{len(cop_empresas)} empresas' if cop_empresas else 'Todas las empresas')
-                st.plotly_chart(
-                    construir_grafico_cruce_periodo(comp, f'Contratado vs Nominado (GBTUD) — {titulo_emp}'),
-                    use_container_width=True
-                )
-
-                st.markdown("---")
-                st.markdown("#### Ranking por Agente")
-                col_rank1, col_rank2 = st.columns(2)
-                with col_rank1:
-                    if not dff_cont_op.empty:
-                        rank_vend = ranking_agente_cruce(dff_cont_op, dff_nom_op, 'nombre_vendedor', n_dias_cop)
-                        if not rank_vend.empty:
-                            st.plotly_chart(construir_grafico_ranking_cruce(rank_vend, 'nombre_vendedor', 'Top Vendedores — Contratado vs Nominado (GBTUD/día)'), use_container_width=True)
-                        else:
-                            st.info("No hay operaciones cruzadas para rankear vendedores.")
-                with col_rank2:
-                    if not dff_cont_op.empty:
-                        rank_comp = ranking_agente_cruce(dff_cont_op, dff_nom_op, 'nombre_comprador', n_dias_cop)
-                        if not rank_comp.empty:
-                            st.plotly_chart(construir_grafico_ranking_cruce(rank_comp, 'nombre_comprador', 'Top Compradores — Contratado vs Nominado (GBTUD/día)'), use_container_width=True)
-                        else:
-                            st.info("No hay operaciones cruzadas para rankear compradores.")
-
-            with st.expander("Ver detalle de operaciones con mayor diferencia (top 30)"):
-                comp_ops, _ = cruzar_matched_periodo(dff_cont_op, dff_nom_op, "Anual")  # solo para reutilizar cálculo agregado si se necesita; el detalle real es por operación
-                # Detalle real por operación, limitado a top 30 por diferencia absoluta
-                grp_cont_det = dff_cont_op.groupby('no_operacion', observed=True).agg(
-                    nombre_vendedor=('nombre_vendedor','first'), nombre_comprador=('nombre_comprador','first'),
-                    modalidad=('modalidad','first'), cantidad_total=('cantidad','sum')).reset_index()
-                grp_cont_det['gbtud_cont'] = grp_cont_det['cantidad_total'] / (n_dias_cop*1000)
-                grp_nom_det = dff_nom_op.groupby('no_operacion', observed=True)['cantidad_mbtud'].sum().reset_index()
-                grp_nom_det['gbtud_nom'] = grp_nom_det['cantidad_mbtud'] / 1000 / n_dias_cop
-                det = grp_cont_det.merge(grp_nom_det[['no_operacion','gbtud_nom']], on='no_operacion', how='inner')
-                det['diferencia'] = det['gbtud_cont'] - det['gbtud_nom']
-                det = det.sort_values('diferencia', key=abs, ascending=False).head(30)
-                det['gbtud_cont'] = det['gbtud_cont'].apply(lambda x: fmt(x,2))
-                det['gbtud_nom'] = det['gbtud_nom'].apply(lambda x: fmt(x,2))
-                det['diferencia'] = det['diferencia'].apply(lambda x: fmt(x,2))
-                det = det[['no_operacion','nombre_vendedor','nombre_comprador','modalidad','gbtud_cont','gbtud_nom','diferencia']]
-                det.columns = ['N° Operación','Vendedor','Comprador','Modalidad','Contratado (GBTUD)','Nominado (GBTUD)','Diferencia (GBTUD)']
-                st.dataframe(det, use_container_width=True, height=400)
+    with tab_n3:
+        st.subheader("Nominación por Comprador")
+        n3_vendedor, n3_comprador, n3_sector, n3_tipo, n3_destino = construir_filtros_nominaciones(df_nom, "n3")
+        col_fi3, col_ff3, col_gran3 = st.columns(3)
+        with col_fi3: n3_inicio = st.date_input("Fecha inicio", value=pd.Timestamp('2025-01-01').date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n3_fi")
+        with col_ff3: n3_fin = st.date_input("Fecha fin", value=df_nom['fecha_gas'].max().date(), min_value=df_nom['fecha_gas'].min().date(), max_value=df_nom['fecha_gas'].max().date(), key="n3_ff")
+        with col_gran3: n3_gran = st.selectbox("Ver por", ["Mensual","Diario","Trimestral","Anual"], key="n3_gran")
+        dfn3 = df_nom.copy()
+        dfn3 = dfn3[(dfn3['fecha_gas'].dt.date >= n3_inicio) & (dfn3['fecha_gas'].dt.date <= n3_fin)]
+        dfn3 = aplicar_filtros_nominaciones(dfn3, n3_vendedor, n3_comprador, n3_sector, n3_tipo, n3_destino)
+        if dfn3.empty:
+            st.warning("No hay datos para los filtros seleccionados.")
+        else:
+            grp_n3 = agrupar_nominaciones(dfn3, n3_gran, 'nombre_comprador')
+            st.plotly_chart(construir_grafico_nom_agente(grp_n3, 'nombre_comprador', 'Nominación (GBTUD/día) por Comprador — Top 15'), use_container_width=True)
+            st.markdown("---")
+            dfn3_gbtud = dfn3.copy()
+            dfn3_gbtud['gbtud'] = dfn3_gbtud['cantidad_mbtud'] / 1000
+            col_c1, col_c2 = st.columns(2)
+            with col_c1: st.plotly_chart(bar_chart_top(dfn3_gbtud, 'nombre_comprador', 'Top 10 Compradores por GBTUD nominado', 'gbtud'), use_container_width=True)
+            with col_c2: st.plotly_chart(pie_chart(dfn3_gbtud, 'nombre_comprador', 'Participación por Comprador', 'gbtud'), use_container_width=True)
